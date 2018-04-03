@@ -26,7 +26,7 @@ def load_data_and_label(feat_path, label_path, preprocess_func=None):
         length = label['s'][i+1] - label['s'][i]
         if length > MIN_LENGTH:    # ignore short (background) clips
             length = min(length, MAX_LENGTH)
-            events.append(np.expand_dims(preprocess_func(feats[label['s'][i] : label['s'][i]+length]), 0))
+            events.append(preprocess_func(feats[label['s'][i] : label['s'][i]+length]))
             labels.append(label['G'][i])
 
     events = np.concatenate(events, axis=0).astype('float32')
@@ -108,19 +108,15 @@ def session_generator(feat_paths, label_paths, sess_per_batch, num_threads=2, sh
         labels = []
         for s in range(sess_per_batch):
             #### very important to have decode() for tf r1.6 ####
-            feats = np.load(feat_path[s].decode(), 'r')
-            label = pkl.load(open(label_path[s].decode(), 'rb'))
+            eve_batch, lab_batch = load_data_and_label(feat_path[s].decode(), label_path[s].decode(), preprocess_func)
 
-            for i in range(len(label['G'])):
-                # ignore short (background) clips
-                if label['s'][i+1] - label['s'][i] > 5:
-                    events.append(np.expand_dims(preprocess_func(feats[label['s'][i] : label['s'][i+1]]), 0))
-                    sess.append(os.path.basename(feat_path[s].decode()).split('.')[0])
-                    labels.append(label['G'][i])
+            events.append(eve_batch)
+            labels.append(lab_batch)
+            sess.append(os.path.basename(feat_path[s].decode()).split('.')[0] * eve_batch.shape[0])
 
         events = np.concatenate(events, axis=0)
         sess = np.asarray(sess).reshape(-1,1)
-        labels = np.asarray(labels).reshape(-1,1)
+        labels = np.concatenate(labels, axis=0)
 
         return events, sess, labels
 

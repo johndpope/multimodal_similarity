@@ -1,5 +1,7 @@
 import tensorflow as tf
 import numpy as np
+import utils
+import functools
 
 
 class SAE(object):
@@ -51,51 +53,48 @@ class SAE(object):
 
 
 
-class TripletSim(object):
+class PairSim(object):
     """ TripletSim layer
-    Input a triplet of sample A, B, C
-    Ouput a binary classification: whether sim(A,B) > sim(A,C)
+    Input a pair of sample A, B
+    Ouput a binary classification: whether A, B is similar with each other
 
-    Reference for pairwise comparison: Unsupervised representation learning by sorting sequence
+    One choice: first calculate distance (A-B)^2 then do prediction (reference: A Discriminatively Learned CNN Embedding for Person Re-identification)
+    Or: concatenate two features then do prediction (reference: A Multi-Task Deep Network for Person Re-Identification)
+
+    We choose the later one here.
     """
 
     def name(self):
-        return "TripletSim"
+        return "PairSim"
 
-    def __init__(self, n_input=256, output_keep_prob=1.0):
+    def __init__(self, n_input=128):
         self.n_input = n_input
-        self.output_keep_prob = output_keep_prob
 
-        self.W_pairwise = tf.get_variable(name="W_pairwise", shape=[self.n_input*2, self.n_input//2],
+        self.W_pairwise = tf.get_variable(name="W_pairwise", shape=[self.n_input*2, self.n_input],
                             initializer=tf.contrib.layers.xavier_initializer(),
                             regularizer=tf.contrib.layers.l2_regularizer(1.),
                             trainable=True)
-        self.b_pairwise = tf.get_variable(name="b_pairwise", shape=[self.n_input//2],
+        self.b_pairwise = tf.get_variable(name="b_pairwise", shape=[self.n_input],
                             initializer=tf.zeros_initializer(),
                             trainable=True)
-        self.W_o = tf.get_variable(name="W_o", shape=[2*(self.n_input//2), 1],
+        self.W_o = tf.get_variable(name="W_o", shape=[self.n_input, 1],
                             initializer=tf.contrib.layers.xavier_initializer(),
                             regularizer=tf.contrib.layers.l2_regularizer(1.),
                             trainable=True)
-        self.b_o = tf.get_variable(name="b_pairwise", shape=[1],
+        self.b_o = tf.get_variable(name="b_o", shape=[1],
                             initializer=tf.zeros_initializer(),
                             trainable=True)
 
         def forward(self, x):
             """
-            x -- feature triplet, [batch_size, 3, n_input]
+            x -- feature pair, [batch_size, 2, n_input]
             """
 
-            x_AB = tf.gather(x, [0,1], axis=1)
-            x_AC = tf.gather(x, [0,2], axis=2)
+            x_concat = tf.reshape(x, [-1, 2*self.n_input])
 
-            h_AB = tf.nn.xw_plus_b(x_AB, self.W_pairwise, self.b_pairwise)
-            drop_AB = tf.nn.dropout(tf.nn.relu(h_AB), self.output_keep_prob)
-            h_AC = tf.nn.xw_plus_b(x_AC, self.W_pairwise, self.b_pairwise)
-            drop_AC = tf.nn.dropout(tf.nn.relu(h_AC), self.output_keep_prob)
+            h = tf.nn.xw_plus_b(x_concat, self.W_pairwise, self.b_pairwise)
 
-            h_concat = tf.concat([h_AB, h_AC], axis=1)
-            self.logits = tf.nn.xw_plus_b(h_concat, self.W_o, self.b_o)    # for computing loss
+            self.logits = tf.nn.xw_plus_b(h, self.W_o, self.b_o)    # for computing loss
             self.prob = tf.sigmoid(self.logits)
 
 
@@ -141,29 +140,10 @@ class TSN(object):
         self.hidden = tf.reduce_mean(h_reshape, axis=1)
 
     def prepare_input(self, feat):
-        """
-        feat -- feature sequence, [time_steps, n_h, n_w, n_input]
-        """
-
-        # reference: TSN pytorch codes
-        average_duration = feat.shape[0] // self.n_seg
-        if average_duration > 0:
-            offsets = np.multiply(range(self.n_seg), average_duration) + np.random.randint(average_duration, size=self.n_seg)
-        else:
-            raise NotImplementedError
-
-        return feat[offsets].astype('float32')
+        return functools.partial(utils.tsn_prepare_input, self.n_seg)
 
     def prepare_input_tf(self, feat):
-        """
-        tensorflow version
-        """
-
-        average_duration = tf.floordiv(tf.shape(feat)[0], self.n_seg)
-        offsets = tf.add(tf.multiply(tf.range(self.n_seg,dtype=tf.int32), average_duration),
-                        tf.random_uniform(shape=(1,self.n_seg),maxval=average_duration,dtype=tf.int32))
-        # offset should be column vector, use reshape
-        return tf.gather_nd(feat, tf.reshape(offsets, [-1,1]))
+        return functools.partial(utils.tsn_prepare_input_tf, self.n_seg)
 
 # Convolutional embedding + TSN for temporal aggregation
 class ConvTSN(object):
@@ -211,29 +191,10 @@ class ConvTSN(object):
         self.hidden = tf.reduce_mean(h_reshape, axis=1)
 
     def prepare_input(self, feat):
-        """
-        feat -- feature sequence, [time_steps, n_h, n_w, n_input]
-        """
-
-        # reference: TSN pytorch codes
-        average_duration = feat.shape[0] // self.n_seg
-        if average_duration > 0:
-            offsets = np.multiply(range(self.n_seg), average_duration) + np.random.randint(average_duration, size=self.n_seg)
-        else:
-            raise NotImplementedError
-
-        return feat[offsets].astype('float32')
+        return functools.partial(utils.tsn_prepare_input, self.n_seg)
 
     def prepare_input_tf(self, feat):
-        """
-        tensorflow version
-        """
-
-        average_duration = tf.floordiv(tf.shape(feat)[0], self.n_seg)
-        offsets = tf.add(tf.multiply(tf.range(self.n_seg,dtype=tf.int32), average_duration),
-                        tf.random_uniform(shape=(1,self.n_seg),maxval=average_duration,dtype=tf.int32))
-        # offset should be column vector, use reshape
-        return tf.gather_nd(feat, tf.reshape(offsets, [-1,1]))
+        return functools.partial(utils.tsn_prepare_input_tf, self.n_seg)
 
 
 # Convolutional TSN for classification
@@ -295,29 +256,10 @@ class ConvTSNClassifier(object):
 
 
     def prepare_input(self, feat):
-        """
-        feat -- feature sequence, [time_steps, n_h, n_w, n_input]
-        """
-
-        # reference: TSN pytorch codes
-        average_duration = feat.shape[0] // self.n_seg
-        if average_duration > 0:
-            offsets = np.multiply(range(self.n_seg), average_duration) + np.random.randint(average_duration, size=self.n_seg)
-        else:
-            raise NotImplementedError
-
-        return feat[offsets].astype('float32')
+        return functools.partial(utils.tsn_prepare_input, self.n_seg)
 
     def prepare_input_tf(self, feat):
-        """
-        tensorflow version
-        """
-
-        average_duration = tf.floordiv(tf.shape(feat)[0], self.n_seg)
-        offsets = tf.add(tf.multiply(tf.range(self.n_seg,dtype=tf.int32), average_duration),
-                        tf.random_uniform(shape=(1,self.n_seg),maxval=average_duration,dtype=tf.int32))
-        # offset should be column vector, use reshape
-        return tf.gather_nd(feat, tf.reshape(offsets, [-1,1]))
+        return functools.partial(utils.tsn_prepare_input_tf, self.n_seg)
 
 # triplet loss
 def triplet_loss(anchor, positive, negative, alpha=0.2):

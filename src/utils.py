@@ -195,3 +195,29 @@ def cdist_tf(diff, metric='squaredeuclidean'):
         return tf.reduce_sum(tf.abs(diff), axis=-1)
     else:
         raise NotImplementedError
+
+def tsn_prepare_input(n_seg, feat):
+    """
+    feat -- feature sequence, [time_steps, n_h, n_w, n_input]
+    """
+
+    # reference: TSN pytorch codes
+    average_duration = feat.shape[0] // n_seg
+    if average_duration > 0:
+        offsets = np.multiply(range(n_seg), average_duration) + np.random.randint(average_duration, size=n_seg)
+    else:
+        raise NotImplementedError
+    feat = feat[offsets].astype('float32')
+
+    return np.expand_dims(feat, 0)
+
+def tsn_prepare_input_tf(n_seg, feat):
+    """
+    tensorflow version
+    """
+
+    average_duration = tf.floordiv(tf.shape(feat)[0], n_seg)
+    offsets = tf.add(tf.multiply(tf.range(n_seg,dtype=tf.int32), average_duration),
+                    tf.random_uniform(shape=(1,n_seg),maxval=average_duration,dtype=tf.int32))
+    # offset should be column vector, use reshape
+    return tf.gather_nd(feat, tf.reshape(offsets, [-1,1]))

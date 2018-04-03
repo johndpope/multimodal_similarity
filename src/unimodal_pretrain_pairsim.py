@@ -1,5 +1,5 @@
 """
-Pretrain unimodal embedding by stacked autoencoder
+Pretrain unimodal similarity prediction
 """
 
 from datetime import datetime
@@ -14,6 +14,7 @@ import random
 import pdb
 from six import iteritems
 import glob
+import functools
 
 sys.path.append('../')
 from configs.train_config import TrainConfig
@@ -25,6 +26,10 @@ def prepare_dataset(data_dir, sessions, feat, label_dir=None):
 
     if feat == 'resnet':
         appendix = '.npy'
+    elif feat == 'sensor':
+        appendix = '_sensors_normalized.npy'
+    elif feat == 'segment':
+        appendix = '_seg_output.npy'
     else:
         raise NotImplementedError
 
@@ -56,23 +61,27 @@ def main():
     # prepare dataset
     train_session = cfg.train_session
     train_set = prepare_dataset(cfg.feature_root, train_session, cfg.feat, cfg.label_root)
-    batch_per_epoch = len(train_set)//cfg.sess_per_batch
 
     val_session = cfg.val_session
     val_set = prepare_dataset(cfg.feature_root, val_session, cfg.feat, cfg.label_root)
 
     # prepare validation data
+    prepare_input = functools.partial(utils.tsn_prepare_input, cfg.num_seg)
     val_feats = []
     val_labels = []
     for session in val_set:
-        eve_batch, lab_batch = load_data_and_label(session[0], session[1], model.prepare_input)
+        eve_batch, lab_batch = load_data_and_label(session[0], session[1], prepare_input)    # sample the data for light-weight evaluation
+        eve_batch = eve_batch.reshape(-1, eve_batch.shape[-1])
+        lab_batch = np.tile(lab_batch, [1, cfg.num_seg])
+        lab_batch = lab_batch.reshape(-1,1)
+
         val_feats.append(eve_batch)
         val_labels.append(lab_batch)
     val_feats = np.concatenate(val_feats, axis=0)
     val_labels = np.concatenate(val_labels, axis=0)
     print ("Shape of val_feats: ", val_feats.shape)
 
-    n_input = val_feats.shape[1]
+    n_input = val_feats.shape[-1]
 
     # generate metadata.tsv for visualize embedding
     with open(os.path.join(result_dir, 'metadata_val.tsv'), 'w') as fout:
@@ -115,7 +124,7 @@ def main():
         # session iterator for session sampling
         feat_paths_ph = tf.placeholder(tf.string, shape=[None, cfg.sess_per_batch])
         label_paths_ph = tf.placeholder(tf.string, shape=[None, cfg.sess_per_batch])
-        train_data = session_generator(feat_paths_ph, label_paths_ph, sess_per_batch=cfg.sess_per_batch, num_threads=2, shuffled=False, preprocess_func=model.prepare_input)
+        train_data = session_generator(feat_paths_ph, label_paths_ph, sess_per_batch=cfg.sess_per_batch, num_threads=2, shuffled=False, preprocess_func=prepare_input)
         train_sess_iterator = train_data.make_initializable_iterator()
         next_train = train_sess_iterator.get_next()
 
@@ -142,7 +151,6 @@ def main():
             epoch = -1
             while epoch < cfg.max_epochs-1:
                 step = sess.run(global_step, feed_dict=None)
-                epoch = step // batch_per_epoch
 
                 # learning rate schedule, reference: "In defense of Triplet Loss"
                 if epoch < cfg.static_epochs:
@@ -168,63 +176,43 @@ def main():
                 batch_count = 1
                 while True:
                     try:
-                        # Hierarchical sampling (same as fast rcnn)
+                        # Sample sessions
                         start_time_select = time.time()
-
-                        # First, sample sessions for a batch
-                        eve, se, lab = sess.run(next_train)
-
+                        eve, _, lab = sess.run(next_train)
+                        eve = eve.reshape(-1, n_input)    # reshape because we use tsn_prepare_input for sampling
+                        lab = np.tile(lab, [1, cfg.num_seg])
+                        lab = lab.reshape(-1,1)
                         select_time1 = time.time() - start_time_select
 
-                        # Get the embeddings of all events
-                        eve_embedding = np.zeros((eve.shape[0], cfg.emb_dim), dtype='float32')
+                        # Train on these sessions
                         for start, end in zip(range(0, eve.shape[0], cfg.batch_size),
                                             range(cfg.batch_size, eve.shape[0]+cfg.batch_size, cfg.batch_size)):
                             end = min(end, eve.shape[0])
-                            emb = sess.run(embedding, feed_dict={input_ph: eve[start:end]})
-                            eve_embedding[start:end] = emb
-
-                        # Second, sample triplets within sampled sessions
-                        if cfg.triplet_select == 'random':
-                            triplet_input = select_triplets_random(eve,lab,cfg.triplet_per_batch)
-                        elif cfg.triplet_select == 'facenet':
-
-                            triplet_input, negative_count = select_triplets_facenet(eve,lab,eve_embedding,cfg.triplet_per_batch,cfg.alpha)
-                        else:
-                            raise NotImplementedError
-
-                        select_time2 = time.time()-start_time_select-select_time1
-
-
-                        if triplet_input is not None:
                             start_time_train = time.time()
-                            # perform training on the selected triplets
                             err, _, step, summ = sess.run([total_loss, train_op, global_step, summary_op],
-                                    feed_dict = {input_ph: triplet_input,
+                                    feed_dict = {input_ph: eve,
                                                 lr_ph: learning_rate})
-
                             train_time = time.time() - start_time_train
-                            print ("Epoch: [%d][%d/%d]\tEvent num: %d\tTriplet num: %d\tSelect_time1: %.3f\tSelect_time2: %.3f\tTrain_time: %.3f\tLoss %.4f" % \
-                                    (epoch+1, batch_count, batch_per_epoch, eve.shape[0], triplet_input.shape[0], select_time1, select_time2, train_time, err))
+                            print ("Epoch: [%d][%d]\tSelect_time: %.3f\tTrain_time: %.3f\tLoss %.4f" % \
+                                    (epoch+1, batch_count, select_time1, train_time, err))
+                            batch_count += 1
 
-                            summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err),
-                                tf.Summary.Value(tag="negative_count", simple_value=negative_count),
-                                tf.Summary.Value(tag="select_time1", simple_value=select_time1)])
+                            summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err)])
                             summary_writer.add_summary(summary, step)
                             summary_writer.add_summary(summ, step)
-
-                        batch_count += 1
                     
                     except tf.errors.OutOfRangeError:
                         print ("Epoch %d done!" % (epoch+1))
+                        epoch += 1
                         break
 
                 # validation on val_set
                 print ("Evaluating on validation set...")
-                val_embeddings, _ = sess.run([embedding, set_emb], feed_dict={input_ph: val_feats})
+                val_err, val_embeddings, _ = sess.run([total_loss, embedding, set_emb], feed_dict={input_ph: val_feats})
                 mAP, _ = utils.evaluate(val_embeddings, val_labels)
 
-                summary = tf.Summary(value=[tf.Summary.Value(tag="Valiation mAP", simple_value=mAP)])
+                summary = tf.Summary(value=[tf.Summary.Value(tag="Validation mAP", simple_value=mAP),
+                                            tf.Summary.Value(tag="Validation loss", simple_value=val_err)])
                 summary_writer.add_summary(summary, step)
 
                 # config for embedding visualization
