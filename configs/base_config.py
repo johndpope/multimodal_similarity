@@ -12,6 +12,8 @@ class BaseConfig(object):
                         help='name of this experiment')
         self.parser.add_argument('--silent_mode', action='store_true',
                 help='Silent mode, no printing')
+        self.parser.add_argument('--seed', type=int, default=12345,
+                       help='seed')
 
         self.parser.add_argument('--ROOT', type=str, default='/home/xyang/projects/multimodal_similarity/',
                 help='codes root path')

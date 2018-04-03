@@ -112,7 +112,7 @@ def main():
         val_feats = []
         val_labels = []
         for session in val_set:
-            eve_batch, lab_batch = load_data_and_label(session[0], session[1], model.prepare_input)
+            eve_batch, lab_batch,_ = load_data_and_label(session[0], session[1], model.prepare_input)
             val_feats.append(eve_batch)
             val_labels.append(lab_batch)
         val_feats = np.concatenate(val_feats, axis=0)

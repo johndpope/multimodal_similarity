@@ -1,3 +1,7 @@
+"""
+Extract features using pretrained model
+"""
+
 import sys
 import os
 import tensorflow as tf
@@ -15,6 +19,10 @@ def prepare_dataset(data_dir, sessions, feat, label_dir=None):
 
     if feat == 'resnet':
         appendix = '.npy'
+    elif feat == 'sensor':
+        appendix = '_sensors_normalized.npy'
+    elif feat == 'segment':
+        appendix = '_seg_output.npy'
     else:
         raise NotImplementedError
 
@@ -33,15 +41,19 @@ def main():
     print ("Evaluate the model: {}".format(os.path.basename(cfg.model_path)))
     np.random.seed(seed=cfg.seed)
 
-    test_session = cfg.test_session
-    test_set = prepare_dataset(cfg.feature_root, test_session, cfg.feat, cfg.label_root)
+    all_session = cfg.all_session
+    all_set = prepare_dataset(cfg.feature_root, all_session, cfg.feat, cfg.label_root)
 
     # load backbone model
     if cfg.network == "tsn":
         model = networks.ConvTSN(n_seg=cfg.num_seg)
+    elif cfg.network == "sae":
+        # TODO: change 8 to general cases
+        n_input = 8
+        model = networks.SAE(n_input=n_input, emb_dim=cfg.emb_dim)
 
     # get the embedding
-    input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
+    input_ph = tf.placeholder(tf.float32, shape=[None, n_input])
     model.forward(input_ph)
     embedding = tf.nn.l2_normalize(model.hidden, dim=1, epsilon=1e-10, name='embedding')
 
@@ -59,33 +71,19 @@ def main():
         # load the model (note that model_path already contains snapshot number
         saver.restore(sess, cfg.model_path)
 
-        eve_embeddings = []
-        labels = []
-        for i, session in enumerate(test_set):
+        for i, session in enumerate(all_set):
             session_id = os.path.basename(session[1]).split('_')[0]
-            print ("{0} / {1}: {2}".format(i, len(test_set), session_id))
+            print ("{0} / {1}: {2}".format(i, len(all_set), session_id))
 
-            eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model.prepare_input)
+            eve = np.load(session[0], 'r')
+            eve_embedding = np.zeros((eve.shape[0], cfg.emb_dim), dtype='float32')
+            for start, end in zip(range(0, eve.shape[0], cfg.batch_size),
+                                range(cfg.batch_size, eve.shape[0]+cfg.batch_size, cfg.batch_size)):
+                end = min(end, eve.shape[0])
+                emb = sess.run(embedding, feed_dict={input_ph: eve[start:end]})
+                eve_embedding[start:end] = emb
 
-            emb = sess.run(embedding, feed_dict={input_ph: eve_batch})
-
-            eve_embeddings.append(emb)
-            labels.append(lab_batch)
-
-        eve_embeddings = np.concatenate(eve_embeddings, axis=0)
-        labels = np.concatenate(labels, axis=0)
-
-    # evaluate the results
-    mAP, mAP_event = evaluate(eve_embeddings, labels)
-
-
-    print ("%d events for evaluation." % labels.shape[0])
-    print ("mAP = {}".format(mAP))
-    keys = list(mAP_event.keys())
-    keys = sorted(keys)
-    for key in keys:
-        print ("Event {2}: {0}, mAP = {1}".format(honda_num2labels[key],
-            mAP_event[key], key))
+            np.save(session[0].replace('.npy', '_sae.npy'), eve_embedding)
 
 if __name__ == '__main__':
     main()

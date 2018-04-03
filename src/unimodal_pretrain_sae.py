@@ -70,7 +70,7 @@ def main():
     val_feats = []
     val_labels = []
     for session in val_set:
-        eve_batch, lab_batch = load_data_and_label(session[0], session[1], prepare_input)    # sample the data for light-weight evaluation
+        eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], prepare_input)    # sample the data for light-weight evaluation
         eve_batch = eve_batch.reshape(-1, eve_batch.shape[-1])
         lab_batch = np.tile(lab_batch, [1, cfg.num_seg])
         lab_batch = lab_batch.reshape(-1,1)

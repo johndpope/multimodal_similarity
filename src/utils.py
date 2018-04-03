@@ -120,9 +120,8 @@ def mean_pool_input(feat, flatten=True):
 
     new_feat = np.mean(feat, axis=0)
     if flatten:
-        return new_feat.flatten()
-    else:
-        return new_feat
+        new_feat = new_feat.flatten()
+    return np.expand_dims(new_feat, 0)
 
 def max_pool_input(feat, flatten=True):
     """
@@ -132,9 +131,8 @@ def max_pool_input(feat, flatten=True):
 
     new_feat = np.max(feat, axis=0)
     if flatten:
-        return new_feat.flatten()
-    else:
-        return new_feat
+        new_feat = new_feat.flatten()
+    return np.expand_dims(new_feat, 0)
 
 def all_diffs_tf(a, b):
     """
@@ -221,3 +219,9 @@ def tsn_prepare_input_tf(n_seg, feat):
                     tf.random_uniform(shape=(1,n_seg),maxval=average_duration,dtype=tf.int32))
     # offset should be column vector, use reshape
     return tf.gather_nd(feat, tf.reshape(offsets, [-1,1]))
+
+def write_configure_to_file(cfg, result_dir):
+    with open(os.path.join(result_dir, 'config.txt'), 'w') as fout:
+        for key, value in iteritems(vars(cfg)):
+            fout.write('%s: %s\n' % (key, str(value)))
+

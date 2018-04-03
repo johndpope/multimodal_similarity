@@ -54,7 +54,7 @@ class SAE(object):
 
 
 class PairSim(object):
-    """ TripletSim layer
+    """ PairSim layer
     Input a pair of sample A, B
     Ouput a binary classification: whether A, B is similar with each other
 

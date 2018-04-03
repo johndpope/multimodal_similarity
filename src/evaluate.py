@@ -1,6 +1,5 @@
 import sys
 import os
-import tensorflow as tf
 import numpy as np
 import pickle as pkl
 import pdb
@@ -18,6 +17,8 @@ def prepare_dataset(data_dir, sessions, feat, label_dir=None):
         appendix = '.npy'
     elif feat == 'sensor':
         appendix = '_sensors_normalized.npy'
+    elif feat == 'sensor_sae':
+        appendix = '_sensors_normalized_sae.npy'
     elif feat == 'segment':
         appendix = '_seg_output.npy'
     else:
@@ -53,7 +54,7 @@ def main():
         session_id = os.path.basename(session[1]).split('_')[0]
         print ("{0} / {1}: {2}".format(i, len(test_set), session_id))
 
-        eve_batch, lab_batch = load_data_and_label(session[0], session[1], preprocess_func)
+        eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], preprocess_func)
 
         eve_embeddings.append(eve_batch)
         labels.append(lab_batch)

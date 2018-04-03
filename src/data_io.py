@@ -5,6 +5,28 @@ import tensorflow as tf
 import random
 import pdb
 
+def prepare_dataset(data_dir, sessions, feat, label_dir=None):
+
+    if feat == 'resnet':
+        appendix = '.npy'
+    elif feat == 'sensor':
+        appendix = '_sensors_normalized.npy'
+    elif feat == 'sensor_sae':
+        appendix = '_sensors_normalized_sae.npy'
+    elif feat == 'segment':
+        appendix = '_seg_output.npy'
+    else:
+        raise NotImplementedError
+
+    dataset = []
+    for sess in sessions:
+        feat_path = os.path.join(data_dir, sess+appendix)
+        label_path = os.path.join(label_dir, sess+'_goal.pkl')
+
+        dataset.append((feat_path, label_path))
+
+    return dataset
+
 def load_data_and_label(feat_path, label_path, preprocess_func=None):
     """
     Load one session (data + label)
@@ -22,17 +44,19 @@ def load_data_and_label(feat_path, label_path, preprocess_func=None):
 
     events = []
     labels = []
+    boundary = []
     for i in range(len(label['G'])):
         length = label['s'][i+1] - label['s'][i]
         if length > MIN_LENGTH:    # ignore short (background) clips
             length = min(length, MAX_LENGTH)
             events.append(preprocess_func(feats[label['s'][i] : label['s'][i]+length]))
             labels.append(label['G'][i])
+            boundary.append((label['s'][i], label['s'][i]+length))
 
     events = np.concatenate(events, axis=0).astype('float32')
     labels = np.asarray(labels).reshape(-1,1)
 
-    return events, labels
+    return events, labels, boundary
 
 def event_generator(tf_paths, feat_dict, context_dict, event_per_batch, num_threads=2, shuffled=True, preprocess_func=None):
     """
@@ -108,7 +132,7 @@ def session_generator(feat_paths, label_paths, sess_per_batch, num_threads=2, sh
         labels = []
         for s in range(sess_per_batch):
             #### very important to have decode() for tf r1.6 ####
-            eve_batch, lab_batch = load_data_and_label(feat_path[s].decode(), label_path[s].decode(), preprocess_func)
+            eve_batch, lab_batch, _ = load_data_and_label(feat_path[s].decode(), label_path[s].decode(), preprocess_func)
 
             events.append(eve_batch)
             labels.append(lab_batch)

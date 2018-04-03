@@ -13,8 +13,6 @@ class TrainConfig(BaseConfig):
                 help='absolute path of pretrained model')
         self.parser.add_argument('--feat', type=str, default='resnet',
                 help='feature used')
-        self.parser.add_argument('--seed', type=int, default=12345,
-                       help='seed')
         self.parser.add_argument('--network', type=str, default='tsn',
                 help='Network used for sequence encoding')
         self.parser.add_argument('--metric', type=str, default='squaredeuclidean',

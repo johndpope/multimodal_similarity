@@ -18,34 +18,9 @@ import functools
 
 sys.path.append('../')
 from configs.train_config import TrainConfig
-from data_io import session_generator, load_data_and_label
+from data_io import session_generator, load_data_and_label, prepare_dataset
 import networks
 import utils
-
-def prepare_dataset(data_dir, sessions, feat, label_dir=None):
-
-    if feat == 'resnet':
-        appendix = '.npy'
-    elif feat == 'sensor':
-        appendix = '_sensors_normalized.npy'
-    elif feat == 'segment':
-        appendix = '_seg_output.npy'
-    else:
-        raise NotImplementedError
-
-    dataset = []
-    for sess in sessions:
-        feat_path = os.path.join(data_dir, sess+appendix)
-        label_path = os.path.join(label_dir, sess+'_goal.pkl')
-
-        dataset.append((feat_path, label_path))
-
-    return dataset
-
-def write_configure_to_file(cfg, result_dir):
-    with open(os.path.join(result_dir, 'config.txt'), 'w') as fout:
-        for key, value in iteritems(vars(cfg)):
-            fout.write('%s: %s\n' % (key, str(value)))
 
 def main():
 
@@ -55,7 +30,7 @@ def main():
             cfg.name+'_'+datetime.strftime(datetime.now(), '%Y%m%d-%H%M%S'))
     if not os.path.isdir(result_dir):
         os.makedirs(result_dir)
-    write_configure_to_file(cfg, result_dir)
+    utils.write_configure_to_file(cfg, result_dir)
     np.random.seed(seed=cfg.seed)
 
     # prepare dataset
@@ -70,11 +45,7 @@ def main():
     val_feats = []
     val_labels = []
     for session in val_set:
-        eve_batch, lab_batch = load_data_and_label(session[0], session[1], prepare_input)    # sample the data for light-weight evaluation
-        eve_batch = eve_batch.reshape(-1, eve_batch.shape[-1])
-        lab_batch = np.tile(lab_batch, [1, cfg.num_seg])
-        lab_batch = lab_batch.reshape(-1,1)
-
+        eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], utils.mean_pool_input)    # temporay use mean
         val_feats.append(eve_batch)
         val_labels.append(lab_batch)
     val_feats = np.concatenate(val_feats, axis=0)
