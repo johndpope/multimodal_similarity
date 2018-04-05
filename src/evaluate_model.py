@@ -65,7 +65,7 @@ def main():
             session_id = os.path.basename(session[1]).split('_')[0]
             print ("{0} / {1}: {2}".format(i, len(test_set), session_id))
 
-            eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model.prepare_input)
+            eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model.prepare_input_test)    # use prepare_input_test for testing time
 
             emb = sess.run(embedding, feed_dict={input_ph: eve_batch})
 

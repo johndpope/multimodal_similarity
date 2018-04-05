@@ -2,6 +2,118 @@ import tensorflow as tf
 import numpy as np
 import utils
 import functools
+from tensorflow.python.ops.rnn import _transpose_batch_time
+
+
+class Seq2seqTSN(object):
+    """
+    Sequence to sequence model for initializeing sequence representation
+    """
+
+    def name(self):
+        return "Seq2seqTSN"
+
+    def __init__(self, n_seg, n_input=8, emb_dim=128, reverse=False):
+        self.n_seg = n_seg
+        self.n_input = n_input
+        self.emb_dim = emb_dim
+        self.reverse = reverse
+
+        self.prepare_input = functools.partial(utils.tsn_prepare_input, self.n_seg)
+        self.prepare_input_test = functools.partial(utils.tsn_prepare_input_test, self.n_seg)
+        self.prepare_input_tf = functools.partial(utils.tsn_prepare_input_tf, self.n_seg)
+
+        with tf.variable_scope("Seq2seqTSN"):
+            self.W_encode = tf.get_variable(name="W_encode", shape=[self.n_input, self.emb_dim],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_encode = tf.get_variable(name="b_encode", shape=[self.emb_dim],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+            # for decoding
+            self.W_decode1 = tf.get_variable(name="W_decode1", shape=[self.emb_dim, self.emb_dim],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_decode1 = tf.get_variable(name="b_decode1", shape=[self.emb_dim],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+            self.b_decode2 = tf.get_variable(name="b_decode2", shape=[self.n_input],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+
+            with tf.variable_scope("encoder"):
+                self.encoder_cell = tf.contrib.rnn.LSTMCell(self.emb_dim, forget_bias=1.0)
+            with tf.variable_scope("decoder"):
+                self.decoder_cell = tf.contrib.rnn.LSTMCell(self.emb_dim, forget_bias=1.0)
+
+    def forward(self, x, keep_prob):
+        """
+        x -- input features, [batch_size, n_seg, n_input]
+        """
+        
+        if self.reverse:
+            # reverse the sequence if needed, claimed to be useful for NMT
+            x = x[:, ::-1, :]
+
+        batch_size = tf.shape(x)[0]
+        seq_len = tf.ones((batch_size,), dtype='int32') * self.n_seg
+
+        ###################### Encoder ###################
+
+        def RNN(x):
+            dropout_cell = tf.contrib.rnn.DropoutWrapper(self.encoder_cell, input_keep_prob=keep_prob)    # onlyt input dropout is used
+            encoder_outputs, encoder_final_state = tf.nn.dynamic_rnn(
+                    dropout_cell, x, seq_len, dtype=tf.float32, scope="Seq2seqTSN/encoder")
+            return encoder_outputs[:, -1], encoder_final_state
+
+        # encode
+        x_flat = tf.reshape(x, [-1, self.n_input])
+        h_encode = tf.nn.relu(tf.nn.xw_plus_b(x_flat, self.W_encode, self.b_encode))
+        h_encode = tf.reshape(h_encode, [-1, self.n_seg, self.emb_dim])
+
+        self.hidden, encoder_final_state = RNN(h_encode)
+
+        ###################### Decoder ###################
+
+        def loop_fn(time, cell_output, cell_state, loop_state):
+            def get_next_input():
+                if cell_state is None:
+                    next_input = tf.zeros([batch_size, self.n_input], dtype=tf.float32)
+                else:
+                    #next_input = tf.nn.xw_plus_b(cell_output, self.W_ho, self.b_o)   # conditioned
+                    next_input = tf.zeros([batch_size, self.n_input], dtype=tf.float32)    # un-conditioned
+                return next_input
+                
+            emit_output = cell_output
+
+            if cell_state is None:
+                next_cell_state = encoder_final_state
+            else:
+                next_cell_state = cell_state
+
+            elements_finished = (time >= seq_len)
+            finished = tf.reduce_all(elements_finished)
+            next_input = tf.cond(
+                        finished,
+                        lambda: tf.zeros([batch_size, self.n_input], dtype=tf.float32),
+                        get_next_input)
+            next_loop_state = None
+
+            return (elements_finished, next_input, next_cell_state,
+                    emit_output, next_loop_state)
+
+        # decode
+        outputs_ta, final_state, _ = tf.nn.raw_rnn(self.decoder_cell, loop_fn, scope="Seq2seqTSN/decoder")
+        outputs = _transpose_batch_time(outputs_ta.stack())    # outputs and shape [batch_size, time ,output_dim]
+
+        outputs = tf.reshape(outputs, [-1, self.emb_dim])
+        h_decode = tf.nn.relu(tf.nn.xw_plus_b(outputs, self.W_decode1, self.b_decode1))
+
+        x_recon = tf.nn.xw_plus_b(h_decode, tf.transpose(self.W_encode), self.b_decode2)
+        self.x_recon = tf.reshape(x_recon, [-1, self.n_seg, self.n_input])
+
 
 
 class SAE(object):
@@ -70,32 +182,33 @@ class PairSim(object):
     def __init__(self, n_input=128):
         self.n_input = n_input
 
-        self.W_pairwise = tf.get_variable(name="W_pairwise", shape=[self.n_input*2, self.n_input],
-                            initializer=tf.contrib.layers.xavier_initializer(),
-                            regularizer=tf.contrib.layers.l2_regularizer(1.),
-                            trainable=True)
-        self.b_pairwise = tf.get_variable(name="b_pairwise", shape=[self.n_input],
-                            initializer=tf.zeros_initializer(),
-                            trainable=True)
-        self.W_o = tf.get_variable(name="W_o", shape=[self.n_input, 1],
-                            initializer=tf.contrib.layers.xavier_initializer(),
-                            regularizer=tf.contrib.layers.l2_regularizer(1.),
-                            trainable=True)
-        self.b_o = tf.get_variable(name="b_o", shape=[1],
-                            initializer=tf.zeros_initializer(),
-                            trainable=True)
+        with tf.variable_scope("pairsim"):
+            self.W_pairwise = tf.get_variable(name="W_pairwise", shape=[self.n_input*2, self.n_input],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_pairwise = tf.get_variable(name="b_pairwise", shape=[self.n_input],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+            self.W_o = tf.get_variable(name="W_o", shape=[self.n_input, 2],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_o = tf.get_variable(name="b_o", shape=[2],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
 
-        def forward(self, x):
-            """
-            x -- feature pair, [batch_size, 2, n_input]
-            """
+    def forward(self, x):
+        """
+        x -- feature pair, [batch_size, 2, n_input]
+        """
 
-            x_concat = tf.reshape(x, [-1, 2*self.n_input])
+        x_concat = tf.reshape(x, [-1, 2*self.n_input])
 
-            h = tf.nn.xw_plus_b(x_concat, self.W_pairwise, self.b_pairwise)
+        h = tf.nn.xw_plus_b(x_concat, self.W_pairwise, self.b_pairwise)
 
-            self.logits = tf.nn.xw_plus_b(h, self.W_o, self.b_o)    # for computing loss
-            self.prob = tf.sigmoid(self.logits)
+        self.logits = tf.nn.xw_plus_b(h, self.W_o, self.b_o)    # for computing loss
+        self.prob = tf.nn.softmax(self.logits)
 
 
 # TSN for temporal aggregation
@@ -145,12 +258,104 @@ class TSN(object):
     def prepare_input_tf(self, feat):
         return functools.partial(utils.tsn_prepare_input_tf, self.n_seg)
 
+# Recurrent convolutional TSN
+class ConvRTSN(object):
+    def name(self):
+        return "ConvRTSN"
+
+    def __init__(self, n_seg=3, n_input=1536, n_h=8, n_w=8, n_C=20, emb_dim=128):
+
+        self.n_seg = n_seg
+        self.n_C = n_C
+        self.n_h = n_h
+        self.n_w = n_w
+        self.n_input = n_input
+        self.emb_dim = emb_dim
+
+        self.prepare_input = functools.partial(utils.tsn_prepare_input, self.n_seg)
+        self.prepare_input_test = functools.partial(utils.tsn_prepare_input_test, self.n_seg)
+        self.prepare_input_tf = functools.partial(utils.tsn_prepare_input_tf, self.n_seg)
+
+        with tf.variable_scope("ConvRTSN"):
+            self.W_emb = tf.get_variable(name="W_emb", shape=[1,1,n_input,self.n_C],
+                            initializer=tf.contrib.layers.xavier_initializer(),
+                            regularizer=tf.contrib.layers.l2_regularizer(1.),
+                            trainable=True)
+            self.encoder_cell = tf.contrib.rnn.LSTMCell(self.emb_dim, forget_bias=1.0)
+
+    def forward(self, x, keep_prob):
+        """
+        x -- input features, [batch_size, n_seg, n_h, n_w, n_input]
+        """
+
+        def RNN(x):
+            dropout_cell = tf.contrib.rnn.DropoutWrapper(self.encoder_cell, input_keep_prob=keep_prob)    # onlyt input dropout is used
+            seq_len = tf.ones((tf.shape(x)[0],), dtype='int32') * self.n_seg
+            encoder_outputs, _ = tf.nn.dynamic_rnn(dropout_cell, x, seq_len, dtype=tf.float32, scope="ConvRTSN")
+            return encoder_outputs[:, -1]
+
+        x_flat = tf.reshape(x, [-1, self.n_h, self.n_w, self.n_input])
+        x_emb = tf.nn.relu(tf.nn.conv2d(input=x_flat, filter=self.W_emb,
+                                        strides=[1, 1, 1, 1], padding="VALID",
+                                        data_format="NHWC"))
+        x_emb = tf.reshape(x_emb, [-1, self.n_seg, self.n_h*self.n_w*self.n_C])
+        self.hidden = RNN(x_emb)
+
+
+# Convolutional embedding + LSTM for sequence encoding
+class ConvLSTM(object):
+    def name(self):
+        return "ConvLSTM"
+
+    def __init__(self, max_time, n_input=1536, n_h=8, n_w=8, n_C=20, emb_dim=128):
+
+        self.max_time = max_time
+        self.n_C = n_C
+        self.n_h = n_h
+        self.n_w = n_w
+        self.n_input = n_input
+        self.emb_dim = emb_dim
+
+        self.prepare_input = functools.partial(utils.rnn_prepare_input, self.max_time)
+
+        with tf.variable_scope("ConvLSTM"):
+            self.W_emb = tf.get_variable(name="W_emb", shape=[1,1,n_input,self.n_C],
+                            initializer=tf.contrib.layers.xavier_initializer(),
+                            regularizer=tf.contrib.layers.l2_regularizer(1.),
+                            trainable=True)
+            self.encoder_cell = tf.contrib.rnn.LSTMCell(self.emb_dim, forget_bias=1.0)
+
+    def forward(self, x, seq_len):
+        """
+        Argument:
+            x -- input features, [batch_size, max_time, n_h, n_w, n_input]
+            seq_len -- length indicator, [batch_size, ]
+        """
+
+        batch_size = tf.shape(x)[0]
+
+        def RNN(x, seq_len):
+            encoder_outputs, _ = tf.nn.dynamic_rnn(self.encoder_cell, x, seq_len, dtype=tf.float32, scope="ConvLSTM")
+
+            # slice the valid output
+            indices = tf.stack([tf.range(batch_size), seq_len-1], axis=1)
+            return tf.gather_nd(encoder_outputs, indices)
+
+        x_flat = tf.reshape(x, [-1, self.n_h, self.n_w, self.n_input])
+        x_emb = tf.nn.relu(tf.nn.conv2d(input=x_flat, filter=self.W_emb,
+                                        strides=[1, 1, 1, 1], padding="VALID",
+                                        data_format="NHWC"))
+        x_emb = tf.reshape(x_emb, [-1, self.max_time, self.n_h*self.n_w*self.n_C])
+        self.hidden = RNN(x_emb, seq_len)
+
+
+
 # Convolutional embedding + TSN for temporal aggregation
 class ConvTSN(object):
     def name(self):
         return "ConvTSN"
 
-    def __init__(self, n_seg=3, n_C=20, emb_dim=256, input_keep_prob=1.0, output_keep_prob=1.0, n_input=1536, n_h=8, n_w=8, n_output=11):
+    def __init__(self, n_seg=3, n_C=20, emb_dim=256, n_input=1536, n_h=8, n_w=8, n_output=11):
         
         self.n_seg = n_seg
         self.n_C = n_C
@@ -159,8 +364,9 @@ class ConvTSN(object):
         self.n_input = n_input
         self.n_output = n_output
         self.emb_dim = emb_dim
-        self.input_keep_prob = input_keep_prob
-        self.output_keep_prob = output_keep_prob
+
+        self.prepare_input = functools.partial(utils.tsn_prepare_input, self.n_seg)
+        self.prepare_input_test = functools.partial(utils.tsn_prepare_input_test, self.n_seg)
 
         self.W_emb = tf.get_variable(name="W_emb", shape=[1,1,n_input,self.n_C],
                             initializer=tf.contrib.layers.xavier_initializer(),
@@ -174,7 +380,7 @@ class ConvTSN(object):
                             initializer=tf.zeros_initializer(),
                             trainable=True)
 
-    def forward(self, x):
+    def forward(self, x, keep_prob):
         """
         x -- input features, [batch_size, n_seg, n_h, n_w, n_input]
         """
@@ -190,11 +396,6 @@ class ConvTSN(object):
 
         self.hidden = tf.reduce_mean(h_reshape, axis=1)
 
-    def prepare_input(self, feat):
-        return functools.partial(utils.tsn_prepare_input, self.n_seg)
-
-    def prepare_input_tf(self, feat):
-        return functools.partial(utils.tsn_prepare_input_tf, self.n_seg)
 
 
 # Convolutional TSN for classification
@@ -213,6 +414,9 @@ class ConvTSNClassifier(object):
         self.emb_dim = emb_dim
         self.input_keep_prob = input_keep_prob
         self.output_keep_prob = output_keep_prob
+
+        self.prepare_input = functools.partial(utils.tsn_prepare_input, self.n_seg)
+        self.prepare_input_test = functools.partial(utils.tsn_prepare_input_test, self.n_seg)
 
         self.W_emb = tf.get_variable(name="W_emb", shape=[1,1,n_input,self.n_C],
                             initializer=tf.contrib.layers.xavier_initializer(),
@@ -255,11 +459,6 @@ class ConvTSNClassifier(object):
         self.logits = tf.reduce_mean(output_reshape, axis=1)
 
 
-    def prepare_input(self, feat):
-        return functools.partial(utils.tsn_prepare_input, self.n_seg)
-
-    def prepare_input_tf(self, feat):
-        return functools.partial(utils.tsn_prepare_input_tf, self.n_seg)
 
 # triplet loss
 def triplet_loss(anchor, positive, negative, alpha=0.2):

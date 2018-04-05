@@ -9,9 +9,9 @@ def prepare_dataset(data_dir, sessions, feat, label_dir=None):
 
     if feat == 'resnet':
         appendix = '.npy'
-    elif feat == 'sensor':
+    elif feat == 'sensors':
         appendix = '_sensors_normalized.npy'
-    elif feat == 'sensor_sae':
+    elif feat == 'sensors_sae':
         appendix = '_sensors_normalized_sae.npy'
     elif feat == 'segment':
         appendix = '_seg_output.npy'
@@ -130,17 +130,26 @@ def session_generator(feat_paths, label_paths, sess_per_batch, num_threads=2, sh
         events = []
         sess = []
         labels = []
+#        lengths = []
         for s in range(sess_per_batch):
             #### very important to have decode() for tf r1.6 ####
-            eve_batch, lab_batch, _ = load_data_and_label(feat_path[s].decode(), label_path[s].decode(), preprocess_func)
+            eve_batch, lab_batch, bou_batch = load_data_and_label(feat_path[s].decode(), label_path[s].decode(), preprocess_func)
 
             events.append(eve_batch)
             labels.append(lab_batch)
-            sess.append(os.path.basename(feat_path[s].decode()).split('.')[0] * eve_batch.shape[0])
+            sess.extend([os.path.basename(feat_path[s].decode()).split('.')[0]] * eve_batch.shape[0])
+#            lengths.extend([b[1]-b[0] for b in bou_batch])
 
         events = np.concatenate(events, axis=0)
         sess = np.asarray(sess).reshape(-1,1)
         labels = np.concatenate(labels, axis=0)
+#        lengths = np.asarray(lengths).reshape(-1,1)
+
+        if shuffled:
+            idx = np.random.permutation(events.shape[0])
+            events = events[idx]
+            sess = sess[idx]
+            labels = labels[idx]
 
         return events, sess, labels
 

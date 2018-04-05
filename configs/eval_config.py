@@ -28,4 +28,10 @@ class EvalConfig(BaseConfig):
         self.parser.add_argument('--gpu', type=str, default=0,
                 help='Set CUDA_VISIBLE_DEVICES')
 
+        self.parser.add_argument('--no_normalized', dest='normalized', action="store_false",
+                help='Whether embeddings are normalized to unit vector')
+        self.parser.set_defaults(normalized=True)
+        self.parser.add_argument('--reverse', dest='reverse', action="store_true",
+                help='Whether to reverse input sequence')
+        self.parser.set_defaults(reverse=False)
 

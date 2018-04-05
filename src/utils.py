@@ -2,6 +2,8 @@ import tensorflow as tf
 import numpy as np
 from sklearn.metrics import average_precision_score
 import pdb
+import os
+from six import iteritems
 
 def optimize(loss, global_step, optimizer, learning_rate, update_gradient_vars, log_histograms=True):
 
@@ -194,6 +196,30 @@ def cdist_tf(diff, metric='squaredeuclidean'):
     else:
         raise NotImplementedError
 
+def rnn_prepare_input(max_time, feat):
+    """
+    feat -- feature sequence, [time_steps, n_h, n_w, n_input]
+    """
+
+    new_feat = np.zeros((max_time,)+feat.shape[1:], dtype='float32')
+    if feat.shape[0] > max_time:
+        new_feat = feat[:max_time]
+    else:
+        new_feat[:feat.shape[0]] = feat
+
+    return np.expand_dims(new_feat, 0)
+
+def rnn_prepare_input_tf(max_time, feat):
+
+    new_feat = tf.zeros((max_time,)+tf.shape(feat)[1:], dtype=tf.float32)
+    if tf.shape(feat)[0] > max_time:
+        new_feat = feat[:max_time]
+    else:
+        new_feat[:tf.shape(feat)[0]] = feat
+
+    return tf.expand_dims(new_feat, 0)
+
+
 def tsn_prepare_input(n_seg, feat):
     """
     feat -- feature sequence, [time_steps, n_h, n_w, n_input]
@@ -205,6 +231,18 @@ def tsn_prepare_input(n_seg, feat):
         offsets = np.multiply(range(n_seg), average_duration) + np.random.randint(average_duration, size=n_seg)
     else:
         raise NotImplementedError
+    feat = feat[offsets].astype('float32')
+
+    return np.expand_dims(feat, 0)
+
+def tsn_prepare_input_test(n_seg, feat):
+    """
+    For testing time, no sampling
+    feat -- feature sequence, [time_steps, n_h, n_w, n_input]
+    """
+
+    average_duration = feat.shape[0] // n_seg
+    offsets = np.array([int(average_duration / 2.0 + average_duration * x) for x in range(n_seg)])
     feat = feat[offsets].astype('float32')
 
     return np.expand_dims(feat, 0)

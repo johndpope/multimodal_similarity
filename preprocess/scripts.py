@@ -156,32 +156,32 @@ Normalize canbus sensor data
 Read generated tfrecords and test whether they are correct
 """
 
-import tensorflow as tf
-import time
-tf_root ='/mnt/work/honda_100h/tfrecords/'
-
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
-
-filename_queue = tf.train.string_input_producer([tf_root+"201706071021.tfrecords"])
-reader = tf.TFRecordReader()
-_, serialized_example = reader.read(filename_queue)
-
-context_features={'label': tf.FixedLenFeature([], tf.int64),
-                  'length': tf.FixedLenFeature([], tf.int64)}
-sequence_features={
-                   'sensors': tf.FixedLenSequenceFeature([8], tf.float32)}
-#sequence_features={'resnet': tf.FixedLenSequenceFeature([98304], tf.float32),
+#import tensorflow as tf
+#import time
+#tf_root ='/mnt/work/honda_100h/tfrecords/'
+#
+#os.environ['CUDA_VISIBLE_DEVICES'] = ''
+#
+#filename_queue = tf.train.string_input_producer([tf_root+"201706071021.tfrecords"])
+#reader = tf.TFRecordReader()
+#_, serialized_example = reader.read(filename_queue)
+#
+#context_features={'label': tf.FixedLenFeature([], tf.int64),
+#                  'length': tf.FixedLenFeature([], tf.int64)}
+#sequence_features={
 #                   'sensors': tf.FixedLenSequenceFeature([8], tf.float32)}
-
-context, feature_lists = tf.parse_single_sequence_example(serialized_example,
-        context_features=context_features, sequence_features=sequence_features)
-
-#c = tf.contrib.learn.run_n(context, n=3, feed_dict=None)
-start_time = time.time()
-s = tf.contrib.learn.run_n(feature_lists, n=10, feed_dict=None)
-duration = time.time() - start_time
-
-print ("Duration %.3f" % duration)
+##sequence_features={'resnet': tf.FixedLenSequenceFeature([98304], tf.float32),
+##                   'sensors': tf.FixedLenSequenceFeature([8], tf.float32)}
+#
+#context, feature_lists = tf.parse_single_sequence_example(serialized_example,
+#        context_features=context_features, sequence_features=sequence_features)
+#
+##c = tf.contrib.learn.run_n(context, n=3, feed_dict=None)
+#start_time = time.time()
+#s = tf.contrib.learn.run_n(feature_lists, n=10, feed_dict=None)
+#duration = time.time() - start_time
+#
+#print ("Duration %.3f" % duration)
 
 
 """
@@ -309,8 +309,45 @@ Test new data generator pipeline with tfrecord
 Test tensorflow version of prepare_input
 """
 
-#import tensorflow as tf
-#import numpy as np
+import tensorflow as tf
+import numpy as np
+
+max_time = 15
+def rnn_prepare_input(feat):
+    """
+    feat -- feature sequence, [time_steps, n_h, n_w, n_input]
+    """
+
+    new_feat = np.zeros((max_time,)+feat.shape[1:], dtype='float32')
+    if feat.shape[0] > max_time:
+        new_feat = feat[:max_time]
+    else:
+        new_feat[:feat.shape[0]] = feat
+
+    return np.expand_dims(new_feat, 0)
+
+def rnn_prepare_input_tf(feat):
+
+    new_feat = tf.cond(tf.shape(feat)[0]>max_time, feat[:max_time], 
+            tf.pad(feat, tf.constant([[0, max_time-tf.shape(feat)[0]],[0,0]]), "CONSTANT"))
+    return tf.expand_dims(new_feat, 0)
+
+feat = np.asarray([[1,1],[2,2],[3,3],[4,4],[5,5],[6,6],[7,7],[8,8],[9,9],[10,10]])
+
+print ("Numpy results")
+print (rnn_prepare_input(feat))
+
+feat_ph = tf.placeholder(tf.int32, shape=[None,2])
+output = rnn_prepare_input_tf(feat_ph)
+
+print ("Tensorflow results")
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
+with tf.Session() as sess:
+    new_feat = sess.run(output, feed_dict={feat_ph:feat})
+    print (new_feat)
+
+#########################################
+
 #
 #n_seg = 3
 #
@@ -339,6 +376,7 @@ Test tensorflow version of prepare_input
 #with tf.Session() as sess:
 #    new_feat = sess.run(output, feed_dict={feat_ph:feat})
 #    print (new_feat)
+
 
 
 
@@ -460,3 +498,38 @@ Test tf.gather for slicing tensor
 #print (ph_val)
 #print (output_val)
 
+
+"""
+Test overlapping of two clusters by measuring intra_class similarity (distance)
+"""
+
+#import pickle
+#
+#def intra_sim(feat):
+#    mu = np.mean(feat, axis=0)
+#    dist = np.linalg.norm(feat-mu, axis=1)
+#    return np.mean(dist)
+#
+#
+#data = pickle.load(open('/mnt/work/honda_100h/results/kmeans_20180403-004256/train_data.pkl','rb'))
+#feats = data['feats']
+#labels = data['labels']
+#
+#NUM_CLUSTER=20
+#
+#origin = np.zeros((NUM_CLUSTER,NUM_CLUSTER), dtype='float32')    # half of sum of two original intra-class similarity
+#joint = np.zeros((NUM_CLUSTER,NUM_CLUSTER), dtype='float32')    # intra-class similarity of merged cluster
+#
+#for i in range(NUM_CLUSTER):
+#    for j in range(i+1, NUM_CLUSTER):
+#        idx_i = np.where(labels==i)[0]
+#        idx_j = np.where(labels==j)[0]
+#
+#        origin[i,j] = 0.5 * (intra_sim(feats[idx_i]) + intra_sim(feats[idx_j]))
+#        joint[i,j] = intra_sim(np.concatenate((feats[idx_i], feats[idx_j]), axis=0))
+#
+#indicator = joint < origin
+#
+#print ("Origin:", origin)
+#print ("Joint:", joint)
+#print ("Indicator:", indicator)

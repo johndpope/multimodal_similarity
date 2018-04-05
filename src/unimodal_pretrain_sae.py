@@ -1,5 +1,5 @@
 """
-Pretrain unimodal embedding by stacked autoencoder
+Pretrain unimodal embedding by Encoder decoder
 """
 
 from datetime import datetime
@@ -18,34 +18,9 @@ import functools
 
 sys.path.append('../')
 from configs.train_config import TrainConfig
-from data_io import session_generator, load_data_and_label
+from data_io import session_generator, load_data_and_label, prepare_dataset
 import networks
 import utils
-
-def prepare_dataset(data_dir, sessions, feat, label_dir=None):
-
-    if feat == 'resnet':
-        appendix = '.npy'
-    elif feat == 'sensor':
-        appendix = '_sensors_normalized.npy'
-    elif feat == 'segment':
-        appendix = '_seg_output.npy'
-    else:
-        raise NotImplementedError
-
-    dataset = []
-    for sess in sessions:
-        feat_path = os.path.join(data_dir, sess+appendix)
-        label_path = os.path.join(label_dir, sess+'_goal.pkl')
-
-        dataset.append((feat_path, label_path))
-
-    return dataset
-
-def write_configure_to_file(cfg, result_dir):
-    with open(os.path.join(result_dir, 'config.txt'), 'w') as fout:
-        for key, value in iteritems(vars(cfg)):
-            fout.write('%s: %s\n' % (key, str(value)))
 
 def main():
 
@@ -55,7 +30,7 @@ def main():
             cfg.name+'_'+datetime.strftime(datetime.now(), '%Y%m%d-%H%M%S'))
     if not os.path.isdir(result_dir):
         os.makedirs(result_dir)
-    write_configure_to_file(cfg, result_dir)
+    utils.write_configure_to_file(cfg, result_dir)
     np.random.seed(seed=cfg.seed)
 
     # prepare dataset
@@ -65,29 +40,7 @@ def main():
     val_session = cfg.val_session
     val_set = prepare_dataset(cfg.feature_root, val_session, cfg.feat, cfg.label_root)
 
-    # prepare validation data
-    prepare_input = functools.partial(utils.tsn_prepare_input, cfg.num_seg)
-    val_feats = []
-    val_labels = []
-    for session in val_set:
-        eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], prepare_input)    # sample the data for light-weight evaluation
-        eve_batch = eve_batch.reshape(-1, eve_batch.shape[-1])
-        lab_batch = np.tile(lab_batch, [1, cfg.num_seg])
-        lab_batch = lab_batch.reshape(-1,1)
-
-        val_feats.append(eve_batch)
-        val_labels.append(lab_batch)
-    val_feats = np.concatenate(val_feats, axis=0)
-    val_labels = np.concatenate(val_labels, axis=0)
-    print ("Shape of val_feats: ", val_feats.shape)
-
-    n_input = val_feats.shape[-1]
-
-    # generate metadata.tsv for visualize embedding
-    with open(os.path.join(result_dir, 'metadata_val.tsv'), 'w') as fout:
-        for v in val_labels:
-            fout.write('%d\n' % int(v))
-
+    n_input = cfg.feat_dim[cfg.feat]
 
     # construct the graph
     with tf.Graph().as_default():
@@ -96,13 +49,17 @@ def main():
         lr_ph = tf.placeholder(tf.float32, name='learning_rate')
 
         # load backbone model
-        model = networks.SAE(n_input=n_input, emb_dim=cfg.emb_dim)
+        model = networks.Seq2seqTSN(n_seg=cfg.num_seg, n_input=n_input, emb_dim=cfg.emb_dim, reverse=cfg.reverse)
 
         # get the embedding
-        input_ph = tf.placeholder(tf.float32, shape=[None, n_input])
-        model.forward(input_ph)
-        embedding = tf.nn.l2_normalize(model.hidden, axis=1, epsilon=1e-10, name='embedding')
+        input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, n_input])
+        dropout_ph = tf.placeholder(tf.float32, shape=[])
+        model.forward(input_ph, dropout_ph)
         recon = model.x_recon
+        if cfg.normalized:
+            embedding = tf.nn.l2_normalize(model.hidden, axis=-1, epsilon=1e-10)
+        else:
+            embedding = model.hidden
 
         # variable for visualizing the embeddings
         emb_var = tf.Variable([0.0], name='embeddings')
@@ -124,9 +81,25 @@ def main():
         # session iterator for session sampling
         feat_paths_ph = tf.placeholder(tf.string, shape=[None, cfg.sess_per_batch])
         label_paths_ph = tf.placeholder(tf.string, shape=[None, cfg.sess_per_batch])
-        train_data = session_generator(feat_paths_ph, label_paths_ph, sess_per_batch=cfg.sess_per_batch, num_threads=2, shuffled=False, preprocess_func=prepare_input)
+        train_data = session_generator(feat_paths_ph, label_paths_ph, sess_per_batch=cfg.sess_per_batch, num_threads=2, shuffled=True, preprocess_func=model.prepare_input)
         train_sess_iterator = train_data.make_initializable_iterator()
         next_train = train_sess_iterator.get_next()
+
+        # prepare validation data
+        val_feats = []
+        val_labels = []
+        for session in val_set:
+            eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model.prepare_input_test)
+            val_feats.append(eve_batch)
+            val_labels.append(lab_batch)
+        val_feats = np.concatenate(val_feats, axis=0)
+        val_labels = np.concatenate(val_labels, axis=0)
+        print ("Shape of val_feats: ", val_feats.shape)
+
+        # generate metadata.tsv for visualize embedding
+        with open(os.path.join(result_dir, 'metadata_val.tsv'), 'w') as fout:
+            for v in val_labels:
+                fout.write('%d\n' % int(v))
 
 
         # Start running the graph
@@ -179,9 +152,6 @@ def main():
                         # Sample sessions
                         start_time_select = time.time()
                         eve, _, lab = sess.run(next_train)
-                        eve = eve.reshape(-1, n_input)    # reshape because we use tsn_prepare_input for sampling
-                        lab = np.tile(lab, [1, cfg.num_seg])
-                        lab = lab.reshape(-1,1)
                         select_time1 = time.time() - start_time_select
 
                         # Train on these sessions
@@ -191,6 +161,7 @@ def main():
                             start_time_train = time.time()
                             err, _, step, summ = sess.run([total_loss, train_op, global_step, summary_op],
                                     feed_dict = {input_ph: eve,
+                                                dropout_ph: cfg.keep_prob,
                                                 lr_ph: learning_rate})
                             train_time = time.time() - start_time_train
                             print ("Epoch: [%d][%d]\tSelect_time: %.3f\tTrain_time: %.3f\tLoss %.4f" % \
@@ -208,7 +179,7 @@ def main():
 
                 # validation on val_set
                 print ("Evaluating on validation set...")
-                val_err, val_embeddings, _ = sess.run([total_loss, embedding, set_emb], feed_dict={input_ph: val_feats})
+                val_err, val_embeddings, _ = sess.run([total_loss, embedding, set_emb], feed_dict={input_ph: val_feats, dropout_ph: 1.0})
                 mAP, _ = utils.evaluate(val_embeddings, val_labels)
 
                 summary = tf.Summary(value=[tf.Summary.Value(tag="Validation mAP", simple_value=mAP),

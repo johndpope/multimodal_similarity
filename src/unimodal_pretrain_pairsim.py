@@ -9,10 +9,8 @@ import sys
 import tensorflow as tf
 from tensorflow.contrib.tensorboard.plugins import projector
 import numpy as np
-import itertools
 import random
 import pdb
-from six import iteritems
 import glob
 import functools
 
@@ -45,19 +43,15 @@ def main():
     val_feats = []
     val_labels = []
     for session in val_set:
-        eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], utils.mean_pool_input)    # temporay use mean
+        eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], prepare_input)
         val_feats.append(eve_batch)
         val_labels.append(lab_batch)
     val_feats = np.concatenate(val_feats, axis=0)
     val_labels = np.concatenate(val_labels, axis=0)
     print ("Shape of val_feats: ", val_feats.shape)
 
-    n_input = val_feats.shape[-1]
-
-    # generate metadata.tsv for visualize embedding
-    with open(os.path.join(result_dir, 'metadata_val.tsv'), 'w') as fout:
-        for v in val_labels:
-            fout.write('%d\n' % int(v))
+    # FIXME
+    n_input=8
 
 
     # construct the graph
@@ -69,24 +63,32 @@ def main():
         # load backbone model
         model = networks.SAE(n_input=n_input, emb_dim=cfg.emb_dim)
 
+        # restore specific variables
+        var_to_restore = [v for v in tf.all_variables() if v.name.startswith('W') or v.name.startswith('b')]
+        saver_restore = tf.train.Saver(var_to_restore)
+
         # get the embedding
         input_ph = tf.placeholder(tf.float32, shape=[None, n_input])
         model.forward(input_ph)
         embedding = tf.nn.l2_normalize(model.hidden, axis=1, epsilon=1e-10, name='embedding')
-        recon = model.x_recon
 
-        # variable for visualizing the embeddings
-        emb_var = tf.Variable([0.0], name='embeddings')
-        set_emb = tf.assign(emb_var, embedding, validate_shape=False)
+        emb_pairs = tf.reshape(embedding, [-1, 2, cfg.emb_dim])
 
-        # calculate the MSE loss
-        MSE_loss = tf.losses.mean_squared_error(input_ph, recon)
+        pairsim = networks.PairSim(n_input=cfg.emb_dim)
+        pairsim.forward(emb_pairs)
+        logits = pairsim.logits
+        prob = pairsim.prob
+
+        label_ph = tf.placeholder(tf.int32, shape=[None])
+        CE_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label_ph, logits=logits)
         regularization_loss = tf.reduce_sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
-        total_loss = MSE_loss + regularization_loss * cfg.lambda_l2
+        total_loss = CE_loss + regularization_loss * cfg.lambda_l2
 
         tf.summary.scalar('learning_rate', lr_ph)
+        var_to_train = [v for v in tf.global_variables() if v.name.startswith("pairsim")]
         train_op = utils.optimize(total_loss, global_step, cfg.optimizer,
-                lr_ph, tf.global_variables())
+                lr_ph, var_to_train)
+
 
         saver = tf.train.Saver(max_to_keep=10)
 
@@ -113,10 +115,15 @@ def main():
 
             sess.run(tf.global_variables_initializer())
 
-            # load pretrain model, if needed
+            [v, W1] = sess.run([var_to_restore, model.W_1], feed_dict=None)
+            pdb.set_trace()
+
+            # load pretrain model to initialize SAE
             if cfg.pretrained_model:
                 print ("Restoring pretrained model: %s" % cfg.pretrained_model)
-                saver.restore(sess, cfg.pretrained_model)
+                saver_restore.restore(sess, cfg.pretrained_model)
+
+            [v, W1] = sess.run([var_to_train, model.W_1], feed_dict=None)
 
             ################## Training loop ##################
             epoch = -1
@@ -151,14 +158,13 @@ def main():
                         start_time_select = time.time()
                         eve, _, lab = sess.run(next_train)
                         eve = eve.reshape(-1, n_input)    # reshape because we use tsn_prepare_input for sampling
-                        lab = np.tile(lab, [1, cfg.num_seg])
-                        lab = lab.reshape(-1,1)
                         select_time1 = time.time() - start_time_select
 
                         # Train on these sessions
                         for start, end in zip(range(0, eve.shape[0], cfg.batch_size),
                                             range(cfg.batch_size, eve.shape[0]+cfg.batch_size, cfg.batch_size)):
                             end = min(end, eve.shape[0])
+
                             start_time_train = time.time()
                             err, _, step, summ = sess.run([total_loss, train_op, global_step, summary_op],
                                     feed_dict = {input_ph: eve,

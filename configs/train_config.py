@@ -12,14 +12,17 @@ class TrainConfig(BaseConfig):
         self.parser.add_argument('--pretrained_model', type=str, default=None,
                 help='absolute path of pretrained model')
         self.parser.add_argument('--feat', type=str, default='resnet',
-                help='feature used')
+                help='feature used: resnet | sensors')
         self.parser.add_argument('--network', type=str, default='tsn',
-                help='Network used for sequence encoding')
+                help='Network used for sequence encoding: tsn | lstm')
         self.parser.add_argument('--metric', type=str, default='squaredeuclidean',
                 help='Metric used to calculate distance: squaredeuclidean | euclidean | l1')
         self.parser.add_argument('--no_normalized', dest='normalized', action="store_false",
                 help='Whether embeddings are normalized to unit vector')
         self.parser.set_defaults(normalized=True)
+        self.parser.add_argument('--reverse', dest='reverse', action="store_true",
+                help='Whether to reverse input sequence')
+        self.parser.set_defaults(reverse=False)
 
         self.parser.add_argument('--num_threads', type=int, default=2,
                        help='number of threads for loading data in parallel')
