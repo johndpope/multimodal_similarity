@@ -164,9 +164,32 @@ def main():
 
         eve_embeddings = np.concatenate(eve_embeddings, axis=0)
 
-    label = kmeans.predict(eve_embeddings)
+    cluster_idx = kmeans.predict(eve_embeddings)
+    cluster_dist = kmeans.transform(eve_embeddings)
+    NUM_HIGH = 20
 
-    pkl.dump({'feats':eve_embeddings, 'labels':label, 'sessions':sessions, 'boundaries':eids_all}, 
+    feat = []
+    label = []
+    ses = []
+    eids = []
+    for i in range(NUM_CLUSTER):
+        idx = np.where(cluster_idx==i)[0]
+        dist = cluster_dist[idx, i]
+        sorted_idx = np.argsort(dist)
+
+        idx = idx[sorted_idx[:NUM_HIGH]]
+        temp = eve_embeddings[idx]
+        feat.append(temp)
+        label.append(i * np.ones((temp.shape[0],1),dtype='int32'))
+        for j in idx:
+            ses.append(sessions[j])
+            eids.append(eids_all[j])
+        print ("Label {} with {} points".format(i, temp.shape[0]))
+
+    feat = np.concatenate(feat, axis=0)
+    label = np.concatenate(label, axis=0)
+
+    pkl.dump({'feats':feat, 'labels':label, 'sessions':ses, 'boundaries':eids}, 
             open(os.path.join(result_dir, 'val_data.pkl'),'wb'))
 
 if __name__ == '__main__':

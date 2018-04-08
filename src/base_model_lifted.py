@@ -1,6 +1,5 @@
 """
-Old version without using tfrecords pipeline
-03/25/2018
+Base model with batch_hard loss
 """
 
 from datetime import datetime
@@ -22,18 +21,14 @@ from data_io import session_generator, load_data_and_label, prepare_dataset
 import networks
 import utils
 
-
-def select_triplets_random(eve, lab, triplet_per_batch, num_negative=3):
+def select_batch(lab, batch_size):
     """
-    Select the triplets for training
-    1. Sample anchor-positive pair (try to balance imbalanced classes)
-    2. Randomly selecting negative sample for each anchor-positive pair
+    Select the samples for training
+    Balancing the number of samples for each class
 
     Arguments:
-    eve -- array of event features, [N, n_seg, (dims)]
     lab -- array of labels, [N,]
-    triplet_per_batch -- int
-    num_negative -- number of negative samples per anchor-positive pairs
+    batch_size
     """
 
     idx_dict = {}
@@ -47,108 +42,22 @@ def select_triplets_random(eve, lab, triplet_per_batch, num_negative=3):
         random.shuffle(idx_dict[key])
 
     # create iterators for each anchor-positive pair
-    foreground_keys = [key for key in idx_dict.keys() if not key == 0]
-    foreground_dict = {}
-    for key in foreground_keys:
-        foreground_dict[key] = itertools.permutations(idx_dict[key], 2)
-
-    triplet_input = []
-    while (len(triplet_input)) < triplet_per_batch * 3:
-        keys = list(foreground_dict.keys())
+    batch_idx = []
+    while len(batch_idx) < batch_size:
+        keys = list(idx_dict.keys())
         if len(keys) == 0:
             break
 
         for key in keys:
-            all_neg = np.where(lab!=key)[0]
-            try:
-                an_idx, pos_idx = foreground_dict[key].__next__()
-            except:
+            # pop one out
+            batch_idx.append(idx_dict[key][0])
+            idx_dict[key] = idx_dict[key][1:]
+
+            if len(idx_dict[key]) == 0:
                 # remove the key to prevent infinite loop
-                del foreground_dict[key]
-                continue
-            
-            # randomly sample negative for the anchor-positive pair
-            for i in range(num_negative):
-                neg_idx = all_neg[np.random.randint(len(all_neg))]
+                del idx_dict[key]
 
-                triplet_input.append(np.expand_dims(eve[an_idx],0))
-                triplet_input.append(np.expand_dims(eve[pos_idx],0))
-                triplet_input.append(np.expand_dims(eve[neg_idx],0))
-
-    return np.concatenate(triplet_input, axis=0)
-
-def select_triplets_facenet(eve, lab, eve_embedding, triplet_per_batch, alpha=0.2, num_negative=3, metric="squaredeuclidean"):
-    """
-    Select the triplets for training
-    1. Sample anchor-positive pair (try to balance imbalanced classes)
-    2. Semi-hard negative mining used in facenet
-
-    Arguments:
-    eve -- array of event features, [N, n_seg, (dims)]
-    lab -- array of labels, [N,]
-    eve_embedding -- array of event embeddings, [N, emb_dim]
-    triplet_per_batch -- int
-    alpha -- float, margin
-    num_negative -- number of negative samples per anchor-positive pairs
-    metric -- metric to calculate distance
-    """
-
-    # get distance for all pairs
-    all_diff = utils.all_diffs(eve_embedding, eve_embedding)
-    all_dist = utils.cdist(all_diff, metric=metric)
-
-    idx_dict = {}
-    for i, l in enumerate(lab):
-        l = int(l)
-        if l not in idx_dict:
-            idx_dict[l] = [i]
-        else:
-            idx_dict[l].append(i)
-    for key in idx_dict:
-        random.shuffle(idx_dict[key])
-
-    # create iterators for each anchor-positive pair
-    foreground_keys = [key for key in idx_dict.keys() if not key == 0]
-    foreground_dict = {}
-    for key in foreground_keys:
-        foreground_dict[key] = itertools.permutations(idx_dict[key], 2)
-
-    triplet_input = []
-    all_neg_count = []    # for monitoring active count
-    while (len(triplet_input)) < triplet_per_batch * 3:
-        keys = list(foreground_dict.keys())
-        if len(keys) == 0:
-            break
-
-        for key in keys:
-            try:
-                an_idx, pos_idx = foreground_dict[key].__next__()
-            except:
-                # remove the key to prevent infinite loop
-                del foreground_dict[key]
-                continue
-            
-            pos_dist = all_dist[an_idx, pos_idx]
-            neg_dist = np.copy(all_dist[an_idx])    # important to make a copy, otherwise is reference
-            neg_dist[idx_dict[key]] = np.NaN
-
-            all_neg = np.where(np.logical_and(neg_dist-pos_dist < alpha,
-                                            pos_dist < neg_dist))[0]
-            all_neg_count.append(len(all_neg))
-
-            # continue if no proper negtive sample 
-            if len(all_neg) > 0:
-                for i in range(num_negative):
-                    neg_idx = all_neg[np.random.randint(len(all_neg))]
-
-                    triplet_input.append(np.expand_dims(eve[an_idx],0))
-                    triplet_input.append(np.expand_dims(eve[pos_idx],0))
-                    triplet_input.append(np.expand_dims(eve[neg_idx],0))
-
-    if len(triplet_input) > 0:
-        return np.concatenate(triplet_input, axis=0), np.mean(all_neg_count)
-    else:
-        return None, None
+    return batch_idx
 
 
 """
@@ -190,6 +99,7 @@ def main():
 
         # get the embedding
         input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
+        label_ph = tf.placeholder(tf.float32, shape=[None])
         dropout_ph = tf.placeholder(tf.float32, shape=[])
         model.forward(input_ph, dropout_ph)
         if cfg.normalized:
@@ -206,13 +116,12 @@ def main():
         all_dist = utils.cdist_tf(diffs)
         tf.summary.histogram('embedding_dists', all_dist)
 
-        # split embedding into anchor, positive and negative and calculate triplet loss
-        anchor, positive, negative = tf.unstack(tf.reshape(embedding, [-1,3,cfg.emb_dim]), 3, 1)
-        metric_loss = networks.triplet_loss(anchor, positive, negative, cfg.alpha)
+        metric_loss, num_active, diff, weights, fp, cn = networks.lifted_loss(all_dist, label_ph, cfg.alpha)
 
         regularization_loss = tf.reduce_sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
         total_loss = metric_loss + regularization_loss * cfg.lambda_l2
 
+        tf.summary.scalar('active_ratio', num_active)
         tf.summary.scalar('learning_rate', lr_ph)
         train_op = utils.optimize(total_loss, global_step, cfg.optimizer,
                 lr_ph, tf.global_variables())
@@ -259,9 +168,9 @@ def main():
             sess.run(tf.global_variables_initializer())
 
             # load pretrain model, if needed
-            if cfg.pretrained_model:
-                print ("Restoring pretrained model: %s" % cfg.pretrained_model)
-                saver.restore(sess, cfg.pretrained_model)
+            if cfg.model_path:
+                print ("Restoring pretrained model: %s" % cfg.model_path)
+                saver.restore(sess, cfg.model_path)
 
             ################## Training loop ##################
             epoch = -1
@@ -293,55 +202,32 @@ def main():
                 batch_count = 1
                 while True:
                     try:
-                        # Hierarchical sampling (same as fast rcnn)
-                        start_time_select = time.time()
-
                         # First, sample sessions for a batch
+                        start_time_select = time.time()
                         eve, se, lab = sess.run(next_train)
-
                         select_time1 = time.time() - start_time_select
 
-                        # Get the embeddings of all events
-                        eve_embedding = np.zeros((eve.shape[0], cfg.emb_dim), dtype='float32')
-                        for start, end in zip(range(0, eve.shape[0], cfg.batch_size),
-                                            range(cfg.batch_size, eve.shape[0]+cfg.batch_size, cfg.batch_size)):
-                            end = min(end, eve.shape[0])
-                            emb = sess.run(embedding, feed_dict={input_ph: eve[start:end], dropout_ph: 1.0})
-                            eve_embedding[start:end] = emb
+                        # Second, select samples for a batch
+                        batch_idx = select_batch(lab,cfg.batch_size)
+                        eve = eve[batch_idx]
+                        lab = lab[batch_idx]
 
-                        # Second, sample triplets within sampled sessions
-                        if cfg.triplet_select == 'random':
-                            triplet_input = select_triplets_random(eve,lab,cfg.triplet_per_batch)
-                            negative_count = 0
-                        elif cfg.triplet_select == 'facenet':
-                            if epoch < cfg.negative_epochs:
-                                triplet_input = select_triplets_random(eve,lab,cfg.triplet_per_batch)
-                                negative_count = 0
-                            else:
-                                triplet_input, negative_count = select_triplets_facenet(eve,lab,eve_embedding,cfg.triplet_per_batch,cfg.alpha,metric=cfg.metric)
-                        else:
-                            raise NotImplementedError
+                        # Third, perform training on a batch
+                        start_time_train = time.time()
+                        err, _, step, summ, diff_v, weights_v, fp_v, cn_v, dist_v= sess.run([total_loss, train_op, global_step, summary_op, diff, weights, fp, cn, all_dist],
+                                feed_dict = {input_ph: eve,
+                                            dropout_ph: cfg.keep_prob,
+                                            label_ph: np.squeeze(lab),
+                                            lr_ph: learning_rate})
 
-                        select_time2 = time.time()-start_time_select-select_time1
+                        train_time = time.time() - start_time_train
+                        print ("Epoch: [%d][%d/%d]\tEvent num: %d\tSelect_time: %.3f\tTrain_time: %.3f\tLoss %.4f" % \
+                                (epoch+1, batch_count, batch_per_epoch, eve.shape[0], select_time1, train_time, err))
 
-
-                        if triplet_input is not None:
-                            start_time_train = time.time()
-                            # perform training on the selected triplets
-                            err, _, step, summ = sess.run([total_loss, train_op, global_step, summary_op],
-                                    feed_dict = {input_ph: triplet_input,
-                                                dropout_ph: cfg.keep_prob,
-                                                lr_ph: learning_rate})
-
-                            train_time = time.time() - start_time_train
-                            print ("Epoch: [%d][%d/%d]\tEvent num: %d\tTriplet num: %d\tSelect_time1: %.3f\tSelect_time2: %.3f\tTrain_time: %.3f\tLoss %.4f" % \
-                                    (epoch+1, batch_count, batch_per_epoch, eve.shape[0], triplet_input.shape[0], select_time1, select_time2, train_time, err))
-
-                            summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err),
-                                tf.Summary.Value(tag="negative_count", simple_value=negative_count),
-                                tf.Summary.Value(tag="select_time1", simple_value=select_time1)])
-                            summary_writer.add_summary(summary, step)
-                            summary_writer.add_summary(summ, step)
+                        summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err),
+                            tf.Summary.Value(tag="select_time1", simple_value=select_time1)])
+                        summary_writer.add_summary(summary, step)
+                        summary_writer.add_summary(summ, step)
 
                         batch_count += 1
                     

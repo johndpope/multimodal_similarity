@@ -309,42 +309,42 @@ Test new data generator pipeline with tfrecord
 Test tensorflow version of prepare_input
 """
 
-import tensorflow as tf
-import numpy as np
-
-max_time = 15
-def rnn_prepare_input(feat):
-    """
-    feat -- feature sequence, [time_steps, n_h, n_w, n_input]
-    """
-
-    new_feat = np.zeros((max_time,)+feat.shape[1:], dtype='float32')
-    if feat.shape[0] > max_time:
-        new_feat = feat[:max_time]
-    else:
-        new_feat[:feat.shape[0]] = feat
-
-    return np.expand_dims(new_feat, 0)
-
-def rnn_prepare_input_tf(feat):
-
-    new_feat = tf.cond(tf.shape(feat)[0]>max_time, feat[:max_time], 
-            tf.pad(feat, tf.constant([[0, max_time-tf.shape(feat)[0]],[0,0]]), "CONSTANT"))
-    return tf.expand_dims(new_feat, 0)
-
-feat = np.asarray([[1,1],[2,2],[3,3],[4,4],[5,5],[6,6],[7,7],[8,8],[9,9],[10,10]])
-
-print ("Numpy results")
-print (rnn_prepare_input(feat))
-
-feat_ph = tf.placeholder(tf.int32, shape=[None,2])
-output = rnn_prepare_input_tf(feat_ph)
-
-print ("Tensorflow results")
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
-with tf.Session() as sess:
-    new_feat = sess.run(output, feed_dict={feat_ph:feat})
-    print (new_feat)
+#import tensorflow as tf
+#import numpy as np
+#
+#max_time = 15
+#def rnn_prepare_input(feat):
+#    """
+#    feat -- feature sequence, [time_steps, n_h, n_w, n_input]
+#    """
+#
+#    new_feat = np.zeros((max_time,)+feat.shape[1:], dtype='float32')
+#    if feat.shape[0] > max_time:
+#        new_feat = feat[:max_time]
+#    else:
+#        new_feat[:feat.shape[0]] = feat
+#
+#    return np.expand_dims(new_feat, 0)
+#
+#def rnn_prepare_input_tf(feat):
+#
+#    new_feat = tf.cond(tf.shape(feat)[0]>max_time, feat[:max_time], 
+#            tf.pad(feat, tf.constant([[0, max_time-tf.shape(feat)[0]],[0,0]]), "CONSTANT"))
+#    return tf.expand_dims(new_feat, 0)
+#
+#feat = np.asarray([[1,1],[2,2],[3,3],[4,4],[5,5],[6,6],[7,7],[8,8],[9,9],[10,10]])
+#
+#print ("Numpy results")
+#print (rnn_prepare_input(feat))
+#
+#feat_ph = tf.placeholder(tf.int32, shape=[None,2])
+#output = rnn_prepare_input_tf(feat_ph)
+#
+#print ("Tensorflow results")
+#os.environ['CUDA_VISIBLE_DEVICES'] = ''
+#with tf.Session() as sess:
+#    new_feat = sess.run(output, feed_dict={feat_ph:feat})
+#    print (new_feat)
 
 #########################################
 
@@ -533,3 +533,4 @@ Test overlapping of two clusters by measuring intra_class similarity (distance)
 #print ("Origin:", origin)
 #print ("Joint:", joint)
 #print ("Indicator:", indicator)
+

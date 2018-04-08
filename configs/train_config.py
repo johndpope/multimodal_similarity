@@ -9,7 +9,7 @@ class TrainConfig(BaseConfig):
     def __init__(self):
         super(TrainConfig, self).__init__()
 
-        self.parser.add_argument('--pretrained_model', type=str, default=None,
+        self.parser.add_argument('--model_path', type=str, default=None,
                 help='absolute path of pretrained model')
         self.parser.add_argument('--feat', type=str, default='resnet',
                 help='feature used: resnet | sensors')
@@ -23,6 +23,9 @@ class TrainConfig(BaseConfig):
         self.parser.add_argument('--reverse', dest='reverse', action="store_true",
                 help='Whether to reverse input sequence')
         self.parser.set_defaults(reverse=False)
+        self.parser.add_argument('--no_soft', dest='no_soft', action="store_true",
+                help='Whether to use softplus')
+        self.parser.set_defaults(no_soft=False)
 
         self.parser.add_argument('--num_threads', type=int, default=2,
                        help='number of threads for loading data in parallel')

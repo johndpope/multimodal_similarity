@@ -1,5 +1,6 @@
 """
-Similarity learning for CANBus sensor input
+Old version without using tfrecords pipeline
+03/25/2018
 """
 
 from datetime import datetime
@@ -17,30 +18,10 @@ import glob
 
 sys.path.append('../')
 from configs.train_config import TrainConfig
-from data_io import session_generator, load_data_and_label
+from data_io import session_generator, load_data_and_label, prepare_dataset
 import networks
 import utils
 
-def prepare_dataset(data_dir, sessions, feat, label_dir=None):
-
-    if feat == 'resnet':
-        appendix = '.npy'
-    else:
-        raise NotImplementedError
-
-    dataset = []
-    for sess in sessions:
-        feat_path = os.path.join(data_dir, sess+appendix)
-        label_path = os.path.join(label_dir, sess+'_goal.pkl')
-
-        dataset.append((feat_path, label_path))
-
-    return dataset
-
-def write_configure_to_file(cfg, result_dir):
-    with open(os.path.join(result_dir, 'config.txt'), 'w') as fout:
-        for key, value in iteritems(vars(cfg)):
-            fout.write('%s: %s\n' % (key, str(value)))
 
 def select_triplets_random(eve, lab, triplet_per_batch, num_negative=3):
     """
@@ -96,7 +77,7 @@ def select_triplets_random(eve, lab, triplet_per_batch, num_negative=3):
 
     return np.concatenate(triplet_input, axis=0)
 
-def select_triplets_facenet(eve, lab, eve_embedding, triplet_per_batch, alpha=0.2, num_negative=3):
+def select_triplets_facenet(eve, lab, eve_embedding, triplet_per_batch, alpha=0.2, num_negative=3, metric="squaredeuclidean"):
     """
     Select the triplets for training
     1. Sample anchor-positive pair (try to balance imbalanced classes)
@@ -109,9 +90,12 @@ def select_triplets_facenet(eve, lab, eve_embedding, triplet_per_batch, alpha=0.
     triplet_per_batch -- int
     alpha -- float, margin
     num_negative -- number of negative samples per anchor-positive pairs
+    metric -- metric to calculate distance
     """
 
-    #FIXME: too slow, seems to take similar time for 100 / 300 triplets_per_batch
+    # get distance for all pairs
+    all_diff = utils.all_diffs(eve_embedding, eve_embedding)
+    all_dist = utils.cdist(all_diff, metric=metric)
 
     idx_dict = {}
     for i, l in enumerate(lab):
@@ -144,13 +128,12 @@ def select_triplets_facenet(eve, lab, eve_embedding, triplet_per_batch, alpha=0.
                 del foreground_dict[key]
                 continue
             
-            pdb.set_trace()
-            pos_dist_sqr = np.sum(np.square(eve_embedding[an_idx] - eve_embedding[pos_idx]))
-            neg_dist_sqr = np.sum(np.square(eve_embedding[an_idx] - eve_embedding), 1)
-            neg_dist_sqr[idx_dict[key]] = np.NaN
+            pos_dist = all_dist[an_idx, pos_idx]
+            neg_dist = np.copy(all_dist[an_idx])    # important to make a copy, otherwise is reference
+            neg_dist[idx_dict[key]] = np.NaN
 
-            all_neg = np.where(np.logical_and(neg_dist_sqr-pos_dist_sqr < alpha,
-                                            pos_dist_sqr < neg_dist_sqr))[0]
+            all_neg = np.where(np.logical_and(neg_dist-pos_dist < alpha,
+                                            pos_dist < neg_dist))[0]
             all_neg_count.append(len(all_neg))
 
             # continue if no proper negtive sample 
@@ -181,7 +164,7 @@ def main():
             cfg.name+'_'+datetime.strftime(datetime.now(), '%Y%m%d-%H%M%S'))
     if not os.path.isdir(result_dir):
         os.makedirs(result_dir)
-    write_configure_to_file(cfg, result_dir)
+    utils.write_configure_to_file(cfg, result_dir)
     np.random.seed(seed=cfg.seed)
 
     # prepare dataset
@@ -193,7 +176,6 @@ def main():
     val_set = prepare_dataset(cfg.feature_root, val_session, cfg.feat, cfg.label_root)
 
 
-
     # construct the graph
     with tf.Graph().as_default():
         tf.set_random_seed(cfg.seed)
@@ -202,12 +184,18 @@ def main():
 
         # load backbone model
         if cfg.network == "tsn":
-            model = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+            model = networks.TSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+        elif cfg.network == "rtsn":
+            model = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
 
         # get the embedding
-        input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
-        model.forward(input_ph)
-        embedding = tf.nn.l2_normalize(model.hidden, axis=1, epsilon=1e-10, name='embedding')
+        input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None])
+        dropout_ph = tf.placeholder(tf.float32, shape=[])
+        model.forward(input_ph, dropout_ph)
+        if cfg.normalized:
+            embedding = tf.nn.l2_normalize(model.hidden, axis=-1, epsilon=1e-10)
+        else:
+            embedding = model.hidden
 
         # variable for visualizing the embeddings
         emb_var = tf.Variable([0.0], name='embeddings')
@@ -215,19 +203,15 @@ def main():
 
         # calculated for monitoring all-pair embedding distance
         diffs = utils.all_diffs_tf(embedding, embedding)
-        all_dist = tf.reduce_sum(tf.square(diffs), axis=-1)
+        all_dist = utils.cdist_tf(diffs)
         tf.summary.histogram('embedding_dists', all_dist)
 
         # split embedding into anchor, positive and negative and calculate triplet loss
         anchor, positive, negative = tf.unstack(tf.reshape(embedding, [-1,3,cfg.emb_dim]), 3, 1)
-        triplet_loss = networks.triplet_loss(anchor, positive, negative, cfg.alpha)
+        metric_loss = networks.triplet_loss(anchor, positive, negative, cfg.alpha)
 
         regularization_loss = tf.reduce_sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
-        total_loss = triplet_loss + regularization_loss * cfg.lambda_l2
-
-#        learning_rate = tf.train.exponential_decay(lr_ph, global_step,
-#                cfg.decay_epochs*(len(train_set)//cfg.sess_per_batch), 
-#                cfg.decay_factor, staircase=True)
+        total_loss = metric_loss + regularization_loss * cfg.lambda_l2
 
         tf.summary.scalar('learning_rate', lr_ph)
         train_op = utils.optimize(total_loss, global_step, cfg.optimizer,
@@ -248,7 +232,7 @@ def main():
         val_feats = []
         val_labels = []
         for session in val_set:
-            eve_batch, lab_batch = load_data_and_label(session[0], session[1], model.prepare_input)
+            eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model.prepare_input_test)    # use prepare_input_test for testing time
             val_feats.append(eve_batch)
             val_labels.append(lab_batch)
         val_feats = np.concatenate(val_feats, axis=0)
@@ -275,9 +259,9 @@ def main():
             sess.run(tf.global_variables_initializer())
 
             # load pretrain model, if needed
-            if cfg.pretrained_model:
-                print ("Restoring pretrained model: %s" % cfg.pretrained_model)
-                saver.restore(sess, cfg.pretrained_model)
+            if cfg.model_path:
+                print ("Restoring pretrained model: %s" % cfg.model_path)
+                saver.restore(sess, cfg.model_path)
 
             ################## Training loop ##################
             epoch = -1
@@ -322,15 +306,19 @@ def main():
                         for start, end in zip(range(0, eve.shape[0], cfg.batch_size),
                                             range(cfg.batch_size, eve.shape[0]+cfg.batch_size, cfg.batch_size)):
                             end = min(end, eve.shape[0])
-                            emb = sess.run(embedding, feed_dict={input_ph: eve[start:end]})
+                            emb = sess.run(embedding, feed_dict={input_ph: eve[start:end], dropout_ph: 1.0})
                             eve_embedding[start:end] = emb
 
                         # Second, sample triplets within sampled sessions
                         if cfg.triplet_select == 'random':
                             triplet_input = select_triplets_random(eve,lab,cfg.triplet_per_batch)
+                            negative_count = 0
                         elif cfg.triplet_select == 'facenet':
-
-                            triplet_input, negative_count = select_triplets_facenet(eve,lab,eve_embedding,cfg.triplet_per_batch,cfg.alpha)
+                            if epoch < cfg.negative_epochs:
+                                triplet_input = select_triplets_random(eve,lab,cfg.triplet_per_batch)
+                                negative_count = 0
+                            else:
+                                triplet_input, negative_count = select_triplets_facenet(eve,lab,eve_embedding,cfg.triplet_per_batch,cfg.alpha,metric=cfg.metric)
                         else:
                             raise NotImplementedError
 
@@ -342,6 +330,7 @@ def main():
                             # perform training on the selected triplets
                             err, _, step, summ = sess.run([total_loss, train_op, global_step, summary_op],
                                     feed_dict = {input_ph: triplet_input,
+                                                dropout_ph: cfg.keep_prob,
                                                 lr_ph: learning_rate})
 
                             train_time = time.time() - start_time_train
@@ -362,7 +351,7 @@ def main():
 
                 # validation on val_set
                 print ("Evaluating on validation set...")
-                val_embeddings, _ = sess.run([embedding, set_emb], feed_dict={input_ph: val_feats})
+                val_embeddings, _ = sess.run([embedding, set_emb], feed_dict={input_ph: val_feats, dropout_ph: 1.0})
                 mAP, _ = utils.evaluate(val_embeddings, val_labels)
 
                 summary = tf.Summary(value=[tf.Summary.Value(tag="Valiation mAP", simple_value=mAP)])

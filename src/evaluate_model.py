@@ -8,24 +8,8 @@ sys.path.append('../')
 from configs.eval_config import EvalConfig
 import networks
 from utils import evaluate
-from data_io import load_data_and_label
+from data_io import load_data_and_label, prepare_dataset
 from preprocess.honda_labels import honda_labels2num, honda_num2labels
-
-def prepare_dataset(data_dir, sessions, feat, label_dir=None):
-
-    if feat == 'resnet':
-        appendix = '.npy'
-    else:
-        raise NotImplementedError
-
-    dataset = []
-    for sess in sessions:
-        feat_path = os.path.join(data_dir, sess+appendix)
-        label_path = os.path.join(label_dir, sess+'_goal.pkl')
-
-        dataset.append((feat_path, label_path))
-
-    return dataset
 
 def main():
 
@@ -38,12 +22,17 @@ def main():
 
     # load backbone model
     if cfg.network == "tsn":
-        model = networks.ConvTSN(n_seg=cfg.num_seg)
+        model = networks.TSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+        #model = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+    elif cfg.network == "rtsn":
+        model = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
 
     # get the embedding
-    input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
-    model.forward(input_ph)
-    embedding = tf.nn.l2_normalize(model.hidden, dim=1, epsilon=1e-10, name='embedding')
+    input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None])
+    #input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
+    dropout_ph = tf.placeholder(tf.float32, shape=[])
+    model.forward(input_ph, dropout_ph)
+    embedding = tf.nn.l2_normalize(model.hidden, axis=1, epsilon=1e-10, name='embedding')
 
     # Testing
     if cfg.gpu:
@@ -67,7 +56,7 @@ def main():
 
             eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model.prepare_input_test)    # use prepare_input_test for testing time
 
-            emb = sess.run(embedding, feed_dict={input_ph: eve_batch})
+            emb = sess.run(embedding, feed_dict={input_ph: eve_batch, dropout_ph: 1.0})
 
             eve_embeddings.append(emb)
             labels.append(lab_batch)

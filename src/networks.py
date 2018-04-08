@@ -182,7 +182,7 @@ class PairSim(object):
     def __init__(self, n_input=128):
         self.n_input = n_input
 
-        with tf.variable_scope("pairsim"):
+        with tf.variable_scope("PairSim"):
             self.W_pairwise = tf.get_variable(name="W_pairwise", shape=[self.n_input*2, self.n_input],
                                 initializer=tf.contrib.layers.xavier_initializer(),
                                 regularizer=tf.contrib.layers.l2_regularizer(1.),
@@ -198,16 +198,17 @@ class PairSim(object):
                                 initializer=tf.zeros_initializer(),
                                 trainable=True)
 
-    def forward(self, x):
+    def forward(self, x, keep_prob):
         """
         x -- feature pair, [batch_size, 2, n_input]
         """
 
         x_concat = tf.reshape(x, [-1, 2*self.n_input])
 
-        h = tf.nn.xw_plus_b(x_concat, self.W_pairwise, self.b_pairwise)
+        h = tf.nn.relu(tf.nn.xw_plus_b(x_concat, self.W_pairwise, self.b_pairwise))
+        h_drop = tf.nn.dropout(h, keep_prob)
 
-        self.logits = tf.nn.xw_plus_b(h, self.W_o, self.b_o)    # for computing loss
+        self.logits = tf.nn.xw_plus_b(h_drop, self.W_o, self.b_o)    # for computing loss
         self.prob = tf.nn.softmax(self.logits)
 
 
@@ -216,12 +217,14 @@ class TSN(object):
     def name(self):
         return "TSN"
 
-    def __init__(self, n_seg=3, emb_dim=256, n_input=1536, output_keep_prob=1.0):
+    def __init__(self, n_seg=3, emb_dim=128, n_input=8):
         
         self.n_seg = n_seg
         self.n_input = n_input
         self.emb_dim = emb_dim
-        self.output_keep_prob = output_keep_prob
+
+        self.prepare_input = functools.partial(utils.tsn_prepare_input, self.n_seg)
+        self.prepare_input_test = functools.partial(utils.tsn_prepare_input_test, self.n_seg)
 
         self.W_1 = tf.get_variable(name="W_1", shape=[self.n_input, self.emb_dim],
                             initializer=tf.contrib.layers.xavier_initializer(),
@@ -238,25 +241,20 @@ class TSN(object):
                             initializer=tf.zeros_initializer(),
                             trainable=True)
 
-    def forward(self, x):
+    def forward(self, x, keep_prob):
         """
         x -- input features, [batch_size, n_seg, n_input]
         """
 
         x_flat = tf.reshape(x, [-1, self.n_input])
         h1 = tf.nn.relu(tf.nn.xw_plus_b(x_flat, self.W_1, self.b_1))
-        h1_drop = tf.nn.dropout(h1, self.output_keep_prob)
+        h1_drop = tf.nn.dropout(h1, keep_prob)
 
         h2 = tf.nn.xw_plus_b(h1_drop, self.W_2, self.b_2)
-        h2_reshape = tf.reshape(h, [-1, self.n_seg, self.emb_dim])
+        h2_reshape = tf.reshape(h2, [-1, self.n_seg, self.emb_dim])
 
-        self.hidden = tf.reduce_mean(h_reshape, axis=1)
+        self.hidden = tf.reduce_mean(h2_reshape, axis=1)
 
-    def prepare_input(self, feat):
-        return functools.partial(utils.tsn_prepare_input, self.n_seg)
-
-    def prepare_input_tf(self, feat):
-        return functools.partial(utils.tsn_prepare_input_tf, self.n_seg)
 
 # Recurrent convolutional TSN
 class ConvRTSN(object):
@@ -469,4 +467,78 @@ def triplet_loss(anchor, positive, negative, alpha=0.2):
     basic_loss = tf.add(tf.subtract(pos_dist, neg_dist), alpha)
     return tf.reduce_mean(tf.maximum(basic_loss, 0.0), 0)
 
+# Weighted Batch-hard loss
+# reference: In Defense of the Triplet Loss for Person Re-Identification
+# (https://github.com/VisualComputingInstitute/triplet-reid/blob/master/loss.py)
+def batch_hard(dists, pids, margin, weighted=True):
 
+    with tf.name_scope("batch_hard"):
+        batch_size = tf.cast(tf.shape(dists)[0], tf.float32)
+
+        same_identity_mask = tf.equal(tf.expand_dims(pids, axis=1),
+                                      tf.expand_dims(pids, axis=0))
+        negative_mask = tf.logical_not(same_identity_mask)
+        positive_mask = tf.logical_xor(same_identity_mask,
+                                       tf.eye(tf.shape(pids)[0], dtype=tf.bool))
+
+        furthest_positive = tf.reduce_max(dists*tf.cast(positive_mask, tf.float32), axis=1)
+        closest_negative = tf.map_fn(lambda x: tf.reduce_min(tf.boolean_mask(x[0], x[1])),
+                                    (dists, negative_mask), tf.float32)
+
+        diff = furthest_positive - closest_negative
+        if margin == "soft":
+            diff = tf.nn.softplus(diff)
+        else:
+            diff = tf.maximum(diff + margin, 0.0)
+
+        if weighted:
+            # reweight the losses, inversely proportional to class frequencies
+            # also mask out background class as anchor
+            foreground_mask = tf.not_equal(pids, 0.0)
+            foreground_num = tf.reduce_sum(tf.cast(foreground_mask, tf.float32))
+
+            weights = tf.reduce_sum(tf.cast(negative_mask, tf.float32), axis=1)
+            weights = tf.multiply(weights, tf.cast(foreground_mask, tf.float32))    # only count foreground
+            weights = tf.divide(weights, tf.reduce_sum(weights))
+        else:
+            weights = tf.divide(1.0, batch_size)
+
+        loss = tf.reduce_sum(tf.multiply(diff, weights))   # weighted loss
+        num_active = tf.reduce_sum(tf.cast(tf.greater(diff*tf.cast(foreground_mask,tf.float32), 1e-5), tf.float32)) / foreground_num
+
+    return loss, num_active, diff, weights, furthest_positive, closest_negative
+
+def lifted_loss(dists, pids, margin, weighted=True):
+
+    with tf.name_scope("lifted_loss"):
+        batch_size = tf.cast(tf.shape(dists)[0], tf.float32)
+
+        same_identity_mask = tf.equal(tf.expand_dims(pids, axis=1),
+                                      tf.expand_dims(pids, axis=0))
+        negative_mask = tf.logical_not(same_identity_mask)
+        positive_mask = tf.logical_xor(same_identity_mask,
+                                       tf.eye(tf.shape(pids)[0], dtype=tf.bool))
+
+        furthest_positive = tf.reduce_logsumexp(dists*tf.cast(positive_mask, tf.float32), axis=1)
+        closest_negative = tf.map_fn(lambda x: tf.reduce_logsumexp(tf.boolean_mask(x[0], x[1])),
+                                    (margin-dists, negative_mask), tf.float32)
+
+        diff = furthest_positive + closest_negative
+        diff = tf.nn.softplus(diff)
+
+        if weighted:
+            # reweight the losses, inversely proportional to class frequencies
+            # also mask out background class as anchor
+            foreground_mask = tf.not_equal(pids, 0.0)
+            foreground_num = tf.reduce_sum(tf.cast(foreground_mask, tf.float32))
+
+            weights = tf.reduce_sum(tf.cast(negative_mask, tf.float32), axis=1)
+            weights = tf.multiply(weights, tf.cast(foreground_mask, tf.float32))    # only count foreground
+            weights = tf.divide(weights, tf.reduce_sum(weights))
+        else:
+            weights = tf.divide(1.0, batch_size)
+
+        loss = tf.reduce_sum(tf.multiply(diff, weights))   # weighted loss
+        num_active = tf.reduce_sum(tf.cast(tf.greater(diff*tf.cast(foreground_mask,tf.float32), 1e-5), tf.float32)) / foreground_num
+
+    return loss, num_active, diff, weights, furthest_positive, closest_negative
