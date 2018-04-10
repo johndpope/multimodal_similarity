@@ -11,14 +11,18 @@ cd ../src
 #model_path='/mnt/work/honda_100h/results/base_model_rtsn_20180404-020419/base_model_rtsn.ckpt-38421'    # rtsn lr=1e-3
 #model_path='/mnt/work/honda_100h/results/base_model_rtsn_lr1e-2_20180404-143558/base_model_rtsn_lr1e-2.ckpt-38429'    # rtsn lr=1e-2
 #model_path='/mnt/work/honda_100h/results/base_model_rtsn_seg5_20180404-143453/base_model_rtsn_seg5.ckpt-38400'    # rstn lr=1e-3 n_seg=5
-model_path='/mnt/work/honda_100h/results/sensors_pretrain_triplet_20180407-230723/sensors_pretrain_triplet.ckpt-35200'    # sensor tsn
+#model_path='/mnt/work/honda_100h/results/sensors_pretrain_triplet_20180407-230723/sensors_pretrain_triplet.ckpt-35200'    # sensor tsn
+#model_path='/mnt/work/honda_100h/results/base_model_lifted_rtsn_20180408-013733/base_model_lifted_rtsn.ckpt-38400'    # lifted, rstn
+model_path='/mnt/work/honda_100h/results/base_model_lifted_rtsn_20180410-003736/base_model_lifted_rtsn.ckpt-16672'    # lifted, rstn lr=1e-2
+#model_path='/mnt/work/honda_100h/results/sensors_pretrain_triplet_20180409-004751/sensors_pretrain_triplet.ckpt-35200'    # sensor rtsn
+#model_path='/mnt/work/honda_100h/results/sensor_pretrain_sae_20180404-214133/sensor_pretrain_sae.ckpt-107800'     # sensor encoder-decoder: seq2seqtsn
 
-feat="sensors"
-network="tsn"
+feat="resnet"
+network="rtsn"
 num_seg=3
 emb_dim=128
 
-gpu=1
+gpu=0
 
 python evaluate_model.py --model_path $model_path --feat $feat \
                    --network $network --num_seg $num_seg \

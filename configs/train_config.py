@@ -21,7 +21,7 @@ class TrainConfig(BaseConfig):
                 help='Whether embeddings are normalized to unit vector')
         self.parser.set_defaults(normalized=True)
         self.parser.add_argument('--reverse', dest='reverse', action="store_true",
-                help='Whether to reverse input sequence')
+                help='Whether to reverse input sequence for seq2seq')
         self.parser.set_defaults(reverse=False)
         self.parser.add_argument('--no_soft', dest='no_soft', action="store_true",
                 help='Whether to use softplus')
@@ -51,6 +51,8 @@ class TrainConfig(BaseConfig):
                        help='margin for triplet loss')
         self.parser.add_argument('--lambda_l2', type=float, default=0.0,
                        help='L2 regularization')
+        self.parser.add_argument('--lambda_ver', type=float, default=0.0,
+                       help='if lambda_ver > 0, then multitask learning (verification loss) is used, and lambda_ver to balance its contribution')
         self.parser.add_argument('--keep_prob', type=float, default=1.0,
                 help='Keep prob for dropout')
         self.parser.add_argument('--negative_epochs', type=int, default=0,

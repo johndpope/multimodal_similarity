@@ -211,6 +211,47 @@ class PairSim(object):
         self.logits = tf.nn.xw_plus_b(h_drop, self.W_o, self.b_o)    # for computing loss
         self.prob = tf.nn.softmax(self.logits)
 
+# Recurrent TSN
+class RTSN(object):
+    def name(self):
+        return "RTSN"
+
+    def __init__(self, n_seg=3, emb_dim=128, n_input=8):
+        
+        self.n_seg = n_seg
+        self.n_input = n_input
+        self.emb_dim = emb_dim
+
+        self.prepare_input = functools.partial(utils.tsn_prepare_input, self.n_seg)
+        self.prepare_input_test = functools.partial(utils.tsn_prepare_input_test, self.n_seg)
+
+
+        with tf.variable_scope("RTSN"):
+            self.W_1 = tf.get_variable(name="W_1", shape=[self.n_input, self.emb_dim],
+                            initializer=tf.contrib.layers.xavier_initializer(),
+                            regularizer=tf.contrib.layers.l2_regularizer(1.),
+                            trainable=True)
+            self.b_1 = tf.get_variable(name="b_1", shape=[self.emb_dim],
+                            initializer=tf.zeros_initializer(),
+                            trainable=True)
+            self.encoder_cell = tf.contrib.rnn.LSTMCell(self.emb_dim, forget_bias=1.0)
+
+    def forward(self, x, keep_prob):
+        """
+        x -- input features, [batch_size, n_seg, n_input]
+        """
+
+        def RNN(x):
+            dropout_cell = tf.contrib.rnn.DropoutWrapper(self.encoder_cell, input_keep_prob=keep_prob)    # onlyt input dropout is used
+            seq_len = tf.ones((tf.shape(x)[0],), dtype='int32') * self.n_seg
+            encoder_outputs, _ = tf.nn.dynamic_rnn(dropout_cell, x, seq_len, dtype=tf.float32, scope="ConvRTSN")
+            return encoder_outputs[:, -1]
+
+        x_flat = tf.reshape(x, [-1, self.n_input])
+        h1 = tf.nn.relu(tf.nn.xw_plus_b(x_flat, self.W_1, self.b_1))
+
+        h1 = tf.reshape(h1, [-1, self.n_seg, self.emb_dim])
+        self.hidden = RNN(h1)
 
 # TSN for temporal aggregation
 class TSN(object):
@@ -524,7 +565,8 @@ def lifted_loss(dists, pids, margin, weighted=True):
                                     (margin-dists, negative_mask), tf.float32)
 
         diff = furthest_positive + closest_negative
-        diff = tf.nn.softplus(diff)
+#        diff = tf.nn.softplus(diff)
+        diff = tf.maximum(diff, 0.0)
 
         if weighted:
             # reweight the losses, inversely proportional to class frequencies
@@ -539,6 +581,7 @@ def lifted_loss(dists, pids, margin, weighted=True):
             weights = tf.divide(1.0, batch_size)
 
         loss = tf.reduce_sum(tf.multiply(diff, weights))   # weighted loss
-        num_active = tf.reduce_sum(tf.cast(tf.greater(diff*tf.cast(foreground_mask,tf.float32), 1e-5), tf.float32)) / foreground_num
+#        num_active = tf.reduce_sum(tf.cast(tf.greater(diff*tf.cast(foreground_mask,tf.float32), 1e-5), tf.float32)) / foreground_num
+        num_active = 1.0
 
     return loss, num_active, diff, weights, furthest_positive, closest_negative

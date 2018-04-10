@@ -20,16 +20,27 @@ def main():
     test_session = cfg.test_session
     test_set = prepare_dataset(cfg.feature_root, test_session, cfg.feat, cfg.label_root)
 
+    n_input = cfg.feat_dim[cfg.feat]
     # load backbone model
     if cfg.network == "tsn":
-        model = networks.TSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
-        #model = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+        if cfg.feat == "sensors":
+            model = networks.TSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+        elif cfg.feat == "resnet":
+            model = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
     elif cfg.network == "rtsn":
-        model = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+        if cfg.feat == "sensors":
+            model = networks.RTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+        elif cfg.feat == "resnet":
+            model = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+    elif cfg.network == "seq2seqtsn":
+        model = networks.Seq2seqTSN(n_seg=cfg.num_seg, n_input=n_input, emb_dim=cfg.emb_dim, reverse=cfg.reverse)
+
 
     # get the embedding
-    input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None])
-    #input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
+    if cfg.feat == "sensors":
+        input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None])
+    elif cfg.feat == "resnet":
+        input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
     dropout_ph = tf.placeholder(tf.float32, shape=[])
     model.forward(input_ph, dropout_ph)
     embedding = tf.nn.l2_normalize(model.hidden, axis=1, epsilon=1e-10, name='embedding')
@@ -65,16 +76,39 @@ def main():
         labels = np.concatenate(labels, axis=0)
 
     # evaluate the results
-    mAP, mAP_event = evaluate(eve_embeddings, labels)
+    mAP, mAP_event, mPrec, confusion, count, recall = evaluate(eve_embeddings, np.squeeze(labels))
 
+    mAP_macro = 0.0
+    for key in mAP_event:
+        mAP_macro += mAP_event[key]
+    mAP_macro /= len(list(mAP_event.keys()))
 
     print ("%d events for evaluation." % labels.shape[0])
     print ("mAP = {}".format(mAP))
-    keys = list(mAP_event.keys())
-    keys = sorted(keys)
-    for key in keys:
-        print ("Event {2}: {0}, mAP = {1}".format(honda_num2labels[key],
-            mAP_event[key], key))
+    print ("mAP_macro = {}".format(mAP_macro))
+    print ("mPrec@0.5 = {}".format(mPrec))
+    print ("Recall@1 = {}, Recall@10 = {}, Recall@100 = {}".format(recall[0], recall[1], recall[2]))
+
+    keys = confusion['labels']
+    for i, key in enumerate(keys):
+        if key not in mAP_event:
+            continue
+        print ("Event {0}: {1}, ratio = {2}, mAP = {3}, mPrec@0.5 = {4}".format(
+            key,
+            honda_num2labels[key],
+            float(count[i]) / np.sum(count),
+            mAP_event[key],
+            confusion['confusion_matrix'][i, i]))
+
+    # store results
+    pkl.dump({"mAP": mAP,
+              "mAP_macro": mAP_macro,
+              "mAP_event": mAP_event,
+              "mPrec": mPrec,
+              "confusion": confusion,
+              "count": count,
+              "recall": recall},
+              open(os.path.join(os.path.dirname(cfg.model_path), "results.pkl"), 'wb'))
 
 if __name__ == '__main__':
     main()

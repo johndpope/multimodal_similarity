@@ -14,13 +14,14 @@ emb_dim=128
 #network="tsn"
 network="rtsn"
 num_seg=3
-batch_size=256
+batch_size=512
 metric="squaredeuclidean"
 
-max_epochs=1200
-static_epochs=600
-lr=1e-3
+max_epochs=750
+static_epochs=350
+lr=1e-2
 keep_prob=1.0
+lambda_l2=0.
 
 
 if [ "$loss" == "triplet" ]; then
@@ -53,11 +54,11 @@ elif [ "$loss" == "batch_hard" ]; then
 
 elif [ "$loss" == "lifted" ]; then
 
-    name=base_model_lifted_rtsn
+    name=base_model_lifted_nosoftplus_margin1.0
 
     python base_model_lifted.py --name $name \
         --gpu $gpu --num_threads $num_threads --num_seg $num_seg --batch_size $batch_size \
-        --sess_per_batch $sess_per_batch --max_epochs $max_epochs \
+        --sess_per_batch $sess_per_batch --max_epochs $max_epochs --lambda_l2 $lambda_l2\
         --learning_rate $lr --static_epochs $static_epochs --emb_dim $emb_dim \
-        --metric $metric --network $network  --keep_prob $keep_prob --alpha 0.2
+        --metric $metric --network $network  --keep_prob $keep_prob --alpha 1.0
 fi

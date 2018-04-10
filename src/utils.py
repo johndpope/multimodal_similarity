@@ -64,17 +64,20 @@ def retrieve_one(query, database, query_label=None, labels=None, normalize=False
                 np.squeeze(np.max(dist) - dist))    # convert distance to score
 
     return dist, idx, ap
-    
-def evaluate(embeddings, labels, normalize=False, standardize=False):
+
+def evaluate_simple(embeddings, labels, normalize=False, standardize=False, alpha=0.5):
     """
+    A simple version with only mean output
+
     Evaluate a given dataset with embeddings and labels
     Loop for each element as query and the rest as database
-    Calculate the mean AP
+    Calculate the mean AP and mean Precision@recall
 
     embeddings -- float32, [N, emb_dim]
     labels -- int32, [N, ]
     normalize -- bool, whether to normalize feature to unit vector
     standardize -- bool, whether to standardize each dimension to be zero mean and unit variance
+    alpha -- float, used for precision @ recall alpha
     """
 
     N, dim = embeddings.shape
@@ -85,12 +88,16 @@ def evaluate(embeddings, labels, normalize=False, standardize=False):
         std = np.std(embeddings, axis=0) + np.finfo(float).tiny
         embeddings = (embeddings - mu) / std
 
+    labels = np.squeeze(labels)
+    unique_labels = sorted(set(labels.tolist()))
+
     aps = []
     lab = []
+    precs = []
     for i in range(N):
         if labels[i] > 0:    # only for foreground events
-            _, _, ap = retrieve_one(embeddings[i], np.delete(embeddings,i,0),
-                                    labels[i], np.delete(labels,i))
+            _, sorted_idx, ap = retrieve_one(embeddings[i], np.delete(embeddings,i,0),
+                                             labels[i], np.delete(labels,i))
 
             if np.isnan(ap):
                 print ("WARNING: encountered an AP of NaN!")
@@ -100,7 +107,72 @@ def evaluate(embeddings, labels, normalize=False, standardize=False):
             else:
                 aps.append(ap)
                 lab.append(int(labels[i]))
+
+                # compute precision @ recall alpha (precisions are for all classes)
+                prec, _ = precision_at_recall(labels[sorted_idx], labels[i], alpha)
+                precs.append(prec)
+
+
     mAP = np.mean(aps)
+    mPrec = np.mean(precs)
+
+    return mAP, mPrec
+    
+def evaluate(embeddings, labels, normalize=False, standardize=False, alpha=0.5):
+    """
+    Evaluate a given dataset with embeddings and labels
+    Loop for each element as query and the rest as database
+    Calculate the mean AP and mean Precision@recall
+
+    embeddings -- float32, [N, emb_dim]
+    labels -- int32, [N, ]
+    normalize -- bool, whether to normalize feature to unit vector
+    standardize -- bool, whether to standardize each dimension to be zero mean and unit variance
+    alpha -- float, used for precision @ recall alpha
+    """
+
+    N, dim = embeddings.shape
+    if normalize:
+        embeddings /= np.linalg.norm(embeddings, axis=1).reshape(-1,1)
+    if standardize:
+        mu = np.mean(embeddings, axis=0)
+        std = np.std(embeddings, axis=0) + np.finfo(float).tiny
+        embeddings = (embeddings - mu) / std
+
+    labels = np.squeeze(labels)
+    unique_labels = sorted(set(labels.tolist()))
+
+    aps = []
+    lab = []
+    precs = []
+    confs = []
+    num_correct = [0, 0, 0]    # for K = 1, 10, 100
+    for i in range(N):
+        if labels[i] > 0:    # only for foreground events
+            _, sorted_idx, ap = retrieve_one(embeddings[i], np.delete(embeddings,i,0),
+                                             labels[i], np.delete(labels,i))
+
+            if np.isnan(ap):
+                print ("WARNING: encountered an AP of NaN!")
+                print ("This may occur when the event only appears once.")
+                print ("The event label here is {}.".format(labels[i]))
+                print ("Ignore this event and carry on.")
+            else:
+                aps.append(ap)
+                lab.append(int(labels[i]))
+
+                # compute precision @ recall alpha (precisions are for all classes)
+                prec, conf = precision_at_recall(labels[sorted_idx], labels[i], alpha)
+                precs.append(prec)
+                confs.append(conf)
+
+                # compute recall @ K
+                num_correct[0] += recall_at_K(labels[sorted_idx], labels[i], 1)
+                num_correct[1] += recall_at_K(labels[sorted_idx], labels[i], 10)
+                num_correct[2] += recall_at_K(labels[sorted_idx], labels[i], 100)
+
+    mAP = np.mean(aps)
+    mPrec = np.mean(precs)
 
     # get mAP for each event
     mAP_event = {}
@@ -112,7 +184,60 @@ def evaluate(embeddings, labels, normalize=False, standardize=False):
     for key in mAP_event:
         mAP_event[key] = np.mean(mAP_event[key])
 
-    return mAP, mAP_event
+    # get confusion matrix
+    confusion_matrix = np.zeros((len(unique_labels), len(unique_labels)), dtype='float32')
+    count = np.zeros((len(unique_labels), 1), dtype='int32')
+    for conf, l in zip(confs, lab):
+        row = unique_labels.index(l)
+        for key in conf:
+            column = unique_labels.index(key)
+            confusion_matrix[row, column] += conf[key]
+        count[row] += 1
+
+    confusion_matrix[1:] /= count[1:]
+    confusion = {"confusion_matrix": confusion_matrix, "labels": unique_labels}
+
+    # get recall @ K
+    recall = [float(num) / len(lab) for num in num_correct]
+
+    return mAP, mAP_event, mPrec, confusion, count, recall
+
+def precision_at_recall(label_list, query_label, alpha=0.5):
+    """
+    Computer precision for all classes at recall alpha fro query label
+    
+    label_list -- [N,], sorted label_list accroding to ascending distance
+    query_label -- class for query
+    alpha -- 0~1, recall
+    """
+
+    num_this_label = np.sum(label_list == query_label)
+    num_recall_alpha = int(alpha * num_this_label)
+
+    unique_labels = sorted(set(label_list.tolist()))
+    prec_dict = dict.fromkeys(unique_labels, 0)
+
+    for i in range(label_list.shape[0]):
+        prec_dict[label_list[i]] += 1
+
+        if prec_dict[query_label] == num_recall_alpha:
+            break
+
+    for key in prec_dict:
+        prec_dict[key] /= (i+1)
+
+    return prec_dict[query_label], prec_dict
+
+def recall_at_K(label_list, query_label, K=10):
+    """
+    reference: https://github.com/rksltnl/Deep-Metric-Learning-CVPR16/blob/master/code/evaluation/evaluate_recall.m
+    """
+
+    knn_label = label_list[:K]
+    if np.sum(knn_label == query_label) > 0:
+        return 1
+    else:
+        return 0
 
 def mean_pool_input(feat, flatten=True):
     """

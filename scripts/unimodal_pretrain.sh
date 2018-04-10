@@ -2,7 +2,7 @@
 
 cd ../src
 
-gpu=1
+gpu=0
 num_threads=2
 sess_per_batch=3
 batch_size=512
@@ -12,7 +12,7 @@ num_seg=3
 
 max_epochs=1100
 static_epochs=600
-lr=1e-1
+lr=1e-2
 keep_prob=1.0
 
 mode="triplet"
@@ -39,6 +39,7 @@ if [ "$mode" = "triplet" ]; then
 
     triplet_per_batch=200
     triplet_select="facenet"
+    network="rtsn"
 
     name=${feat}_pretrain_triplet
 
@@ -47,7 +48,7 @@ if [ "$mode" = "triplet" ]; then
         --sess_per_batch $sess_per_batch --max_epochs $max_epochs \
         --learning_rate $lr --static_epochs $static_epochs --emb_dim $emb_dim \
         --feat $feat --num_seg $num_seg --keep_prob $keep_prob --triplet_select $triplet_select \
-        --triplet_per_batch $triplet_per_batch
+        --triplet_per_batch $triplet_per_batch --network $network
 fi
 
 ###############################################################
