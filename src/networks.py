@@ -163,7 +163,52 @@ class SAE(object):
         h_recon = tf.nn.relu(tf.nn.xw_plus_b(self.hidden, tf.transpose(self.W_2), self.b_3))
         self.x_recon = tf.nn.xw_plus_b(h_recon, tf.transpose(self.W_1), self.b_4)
 
+class PairSim2(object):
+    """ PairSim layer
+    Input a pair of sample A, B
+    Ouput a binary classification: whether A, B is similar with each other
 
+    One choice: first calculate distance (A-B)^2 then do prediction (reference: A Discriminatively Learned CNN Embedding for Person Re-identification)
+    Or: concatenate two features then do prediction (reference: A Multi-Task Deep Network for Person Re-Identification)
+
+    We choose the first one here.
+    """
+
+    def name(self):
+        return "PairSim"
+
+    def __init__(self, n_input=128):
+        self.n_input = n_input
+
+        with tf.variable_scope("PairSim"):
+            self.W_pairwise = tf.get_variable(name="W_pairwise", shape=[self.n_input, self.n_input],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_pairwise = tf.get_variable(name="b_pairwise", shape=[self.n_input],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+            self.W_o = tf.get_variable(name="W_o", shape=[self.n_input, 2],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_o = tf.get_variable(name="b_o", shape=[2],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+
+    def forward(self, x, keep_prob):
+        """
+        x -- feature pair, [batch_size, 2, n_input]
+        """
+
+        x_A, x_B = tf.unstack(x, 2, 1)
+        x_diff = tf.square(x_A - x_B)
+
+        h = tf.nn.relu(tf.nn.xw_plus_b(x_diff, self.W_pairwise, self.b_pairwise))
+        h_drop = tf.nn.dropout(h, keep_prob)
+
+        self.logits = tf.nn.xw_plus_b(h_drop, self.W_o, self.b_o)    # for computing loss
+        self.prob = tf.nn.softmax(self.logits)
 
 class PairSim(object):
     """ PairSim layer
@@ -204,12 +249,40 @@ class PairSim(object):
         """
 
         x_concat = tf.reshape(x, [-1, 2*self.n_input])
+        x_drop = tf.nn.dropout(x_concat, keep_prob)
 
-        h = tf.nn.relu(tf.nn.xw_plus_b(x_concat, self.W_pairwise, self.b_pairwise))
+        h = tf.nn.relu(tf.nn.xw_plus_b(x_drop, self.W_pairwise, self.b_pairwise))
         h_drop = tf.nn.dropout(h, keep_prob)
 
         self.logits = tf.nn.xw_plus_b(h_drop, self.W_o, self.b_o)    # for computing loss
         self.prob = tf.nn.softmax(self.logits)
+
+class OutputLayer(object):
+    def name(self):
+        return "OutputLayer"
+
+    def __init__(self, n_input, n_output):
+
+        self.n_input = n_input
+        self.n_output = n_output
+
+        with tf.variable_scope("OutputLayer"):
+            self.W = tf.get_variable(name="W", shape=[self.n_input, self.n_output],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b = tf.get_variable(name="b", shape=[self.n_output],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+
+    def forward(self, x, keep_prob):
+        """
+        x -- feature batch, [batch_size, n_input]
+        """
+
+        x_drop = tf.nn.dropout(x, keep_prob)
+        self.logits = tf.nn.xw_plus_b(x_drop, self.W, self.b)
+
 
 # Recurrent TSN
 class RTSN(object):
@@ -244,7 +317,7 @@ class RTSN(object):
         def RNN(x):
             dropout_cell = tf.contrib.rnn.DropoutWrapper(self.encoder_cell, input_keep_prob=keep_prob)    # onlyt input dropout is used
             seq_len = tf.ones((tf.shape(x)[0],), dtype='int32') * self.n_seg
-            encoder_outputs, _ = tf.nn.dynamic_rnn(dropout_cell, x, seq_len, dtype=tf.float32, scope="ConvRTSN")
+            encoder_outputs, _ = tf.nn.dynamic_rnn(dropout_cell, x, seq_len, dtype=tf.float32, scope="RTSN")
             return encoder_outputs[:, -1]
 
         x_flat = tf.reshape(x, [-1, self.n_input])
@@ -501,6 +574,20 @@ class ConvTSNClassifier(object):
 
 # triplet loss
 def triplet_loss(anchor, positive, negative, alpha=0.2):
+
+    pos_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, positive)), 1)
+    neg_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, negative)), 1)
+
+    basic_loss = tf.add(tf.subtract(pos_dist, neg_dist), alpha)
+    return tf.reduce_mean(tf.maximum(basic_loss, 0.0), 0)
+
+# weighted triplet loss
+def triplet_loss(anchor, positive, negative, weights, alpha=0.2):
+    """
+    weigths -- tf.float32, [N, 2]
+               first column is the similarity confidence of anchor-positive pairs >0.8
+               second column is the similarity confidence of anchor-negative pairs < 0.2
+    """
 
     pos_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, positive)), 1)
     neg_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, negative)), 1)

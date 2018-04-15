@@ -1,5 +1,5 @@
 """
-A multitask version of base_model.py
+Train PairSim models for similarity prediction
 """
 
 from datetime import datetime
@@ -23,25 +23,10 @@ import networks
 import utils
 
 
-def select_triplets_facenet(eve, lab, eve_embedding, triplet_per_batch, alpha=0.2, num_negative=3, metric="squaredeuclidean"):
+def random_pairs(lab, batch_size, num_negative=1, test=False):
     """
-    Select the triplets for training
-    1. Sample anchor-positive pair (try to balance imbalanced classes)
-    2. Semi-hard negative mining used in facenet
-
-    Arguments:
-    eve -- array of event features, [N, n_seg, (dims)]
-    lab -- array of labels, [N,]
-    eve_embedding -- array of event embeddings, [N, emb_dim]
-    triplet_per_batch -- int
-    alpha -- float, margin
-    num_negative -- number of negative samples per anchor-positive pairs
-    metric -- metric to calculate distance
+    num_negative -- control the ratio of postive : negative
     """
-
-    # get distance for all pairs
-    all_diff = utils.all_diffs(eve_embedding, eve_embedding)
-    all_dist = utils.cdist(all_diff, metric=metric)
 
     idx_dict = {}
     for i, l in enumerate(lab):
@@ -50,58 +35,68 @@ def select_triplets_facenet(eve, lab, eve_embedding, triplet_per_batch, alpha=0.
             idx_dict[l] = [i]
         else:
             idx_dict[l].append(i)
+    if test:
+        random.seed(1)
     for key in idx_dict:
         random.shuffle(idx_dict[key])
 
-    # create iterators for each anchor-positive pair
-    foreground_keys = [key for key in idx_dict.keys() if not key == 0]
+    foreground_keys = list(idx_dict.keys())
+    foreground_keys.remove(0)
     foreground_dict = {}
     for key in foreground_keys:
         foreground_dict[key] = itertools.permutations(idx_dict[key], 2)
 
-    triplet_input = []
-    all_neg_count = []    # for monitoring active count
-    while (len(triplet_input)) < triplet_per_batch * 3:
+    pair_idx = []
+    label = []
+    while len(pair_idx) < batch_size * 2:
         keys = list(foreground_dict.keys())
         if len(keys) == 0:
             break
-
+        
         for key in keys:
             try:
                 an_idx, pos_idx = foreground_dict[key].__next__()
             except:
-                # remove the key to prevent infinite loop
                 del foreground_dict[key]
                 continue
-            
-            pos_dist = all_dist[an_idx, pos_idx]
-            neg_dist = np.copy(all_dist[an_idx])    # important to make a copy, otherwise is reference
-            neg_dist[idx_dict[key]] = np.NaN
 
-            all_neg = np.where(np.logical_and(neg_dist-pos_dist < alpha,
-                                            pos_dist < neg_dist))[0]
-            all_neg_count.append(len(all_neg))
+            # apend pairs and their mirrors
+            pair_idx.extend([an_idx, pos_idx, pos_idx, an_idx])
+            label.extend([1,1])
 
-            # continue if no proper negtive sample 
-            if len(all_neg) > 0:
-                for i in range(num_negative):
-                    neg_idx = all_neg[np.random.randint(len(all_neg))]
+            # randomly select negative pairs
+            all_neg = np.where(lab!=key)[0]
+            for i in range(num_negative):
+                neg_idx = all_neg[np.random.randint(len(all_neg))]
 
-                    triplet_input.append(np.expand_dims(eve[an_idx],0))
-                    triplet_input.append(np.expand_dims(eve[pos_idx],0))
-                    triplet_input.append(np.expand_dims(eve[neg_idx],0))
+                pair_idx.extend([an_idx, neg_idx, neg_idx, an_idx])
+                label.extend([0,0])
+    return pair_idx, label
 
-    if len(triplet_input) > 0:
-        return np.concatenate(triplet_input, axis=0), np.mean(all_neg_count)
-    else:
-        return None, None
+def hard_pairs(lab, prob, threshold=0.9):
+    """
+    get the hard samples and re-train those samples
+    reference: DeepReID: Deep Filter Pairing Neural Network for Person Re-Identification
+    """
+
+    pair_idx = []
+    label = []
+
+    # hard positives
+    hard_pos = np.where(np.logical_and(lab, prob[:,0]>threshold))[0]
+    for idx in hard_pos:
+        pair_idx.extend([2*idx, 2*idx+1, 2*idx+1, 2*idx])
+        label.extend([1, 1])
+    
+    # hard negatives
+    hard_neg = np.where(np.logical_and(lab==0, prob[:,1]>threshold))[0]
+    for idx in hard_neg:
+        pair_idx.extend([2*idx, 2*idx+1, 2*idx+1, 2*idx])
+        label.extend([0, 0])
+
+    return pair_idx, label, len(hard_neg)+len(hard_pos)
 
 
-"""
-Reference:
-    FaceNet implementation:
-    https://github.com/davidsandberg/facenet
-"""
 def main():
 
     cfg = TrainConfig().parse()
@@ -118,7 +113,7 @@ def main():
     train_set = prepare_dataset(cfg.feature_root, train_session, cfg.feat, cfg.label_root)
     batch_per_epoch = len(train_set)//cfg.sess_per_batch
 
-    val_session = cfg.val_session
+    val_session = cfg.val_session[:3]
     val_set = prepare_dataset(cfg.feature_root, val_session, cfg.feat, cfg.label_root)
 
 
@@ -126,6 +121,10 @@ def main():
     with tf.Graph().as_default():
         tf.set_random_seed(cfg.seed)
         global_step = tf.Variable(0, trainable=False)
+
+        # subtract global_step by 1 if needed (for hard negative mining, keep global_step unchanged)
+        subtract_global_step_op = tf.assign(global_step, global_step-1)
+
         lr_ph = tf.placeholder(tf.float32, name='learning_rate')
 
         # load backbone model
@@ -140,10 +139,7 @@ def main():
         else:
             raise NotImplementedError
 
-
-        # multitask loss (verification)
-        model_ver = networks.PairSim2(n_input=cfg.emb_dim)
-        #model_ver = networks.PairSim(n_input=cfg.emb_dim)
+        model_ver = networks.PairSim(n_input=cfg.emb_dim)
 
         # get the embedding
         if cfg.feat == "sensors":
@@ -151,42 +147,23 @@ def main():
         elif cfg.feat == "resnet":
             input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
         dropout_ph = tf.placeholder(tf.float32, shape=[])
+        label_ph = tf.placeholder(tf.int32, shape=[None])
         model_emb.forward(input_ph, dropout_ph)
-        if cfg.normalized:
-            embedding = tf.nn.l2_normalize(model_emb.hidden, axis=-1, epsilon=1e-10)
-        else:
-            embedding = model_emb.hidden
+        embedding = model_emb.hidden
 
-        # variable for visualizing the embeddings
-        emb_var = tf.Variable([0.0], name='embeddings')
-        set_emb = tf.assign(emb_var, embedding, validate_shape=False)
+        # split embedding into A and B
+        emb_A, emb_B = tf.unstack(tf.reshape(embedding, [-1,2,cfg.emb_dim]), 2, 1)
+        pairs = tf.stack([emb_A, emb_B], axis=1)
 
-        # calculated for monitoring all-pair embedding distance
-        diffs = utils.all_diffs_tf(embedding, embedding)
-        all_dist = utils.cdist_tf(diffs)
-        tf.summary.histogram('embedding_dists', all_dist)
-
-        # split embedding into anchor, positive and negative and calculate triplet loss
-        anchor, positive, negative = tf.unstack(tf.reshape(embedding, [-1,3,cfg.emb_dim]), 3, 1)
-        metric_loss = networks.triplet_loss(anchor, positive, negative, cfg.alpha)
-
-        # verification loss
-        pos_pairs = tf.concat([tf.expand_dims(anchor,axis=1), tf.expand_dims(positive,axis=1)], axis=1)
-        pos_label = tf.ones((tf.shape(pos_pairs)[0],), tf.int32)
-        neg_pairs = tf.concat([tf.expand_dims(anchor,axis=1), tf.expand_dims(negative,axis=1)], axis=1)
-        neg_label = tf.zeros((tf.shape(neg_pairs)[0],), tf.int32)
-
-        ver_pairs = tf.concat([pos_pairs, neg_pairs], axis=0)
-        ver_label = tf.concat([pos_label, neg_label], axis=0)
-
-        model_ver.forward(ver_pairs, dropout_ph)
+        model_ver.forward(pairs, dropout_ph)
         logits = model_ver.logits
+        prob = model_ver.prob
         pred = tf.argmax(logits, -1)
 
-        ver_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=ver_label, logits=logits))
+        ver_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label_ph, logits=logits))
 
         regularization_loss = tf.reduce_sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
-        total_loss = metric_loss + cfg.lambda_ver * ver_loss +  regularization_loss * cfg.lambda_l2
+        total_loss = ver_loss +  regularization_loss * cfg.lambda_l2
 
         tf.summary.scalar('learning_rate', lr_ph)
         train_op = utils.optimize(total_loss, global_step, cfg.optimizer,
@@ -217,7 +194,6 @@ def main():
             val_boundaries.extend(boundary)
         val_feats = np.concatenate(val_feats, axis=0)
         val_labels = np.concatenate(val_labels, axis=0)
-        print ("Shape of val_feats: ", val_feats.shape)
 
         # generate metadata.tsv for visualize embedding
         with open(os.path.join(result_dir, 'metadata_val.tsv'), 'w') as fout:
@@ -225,6 +201,11 @@ def main():
             for i in range(len(val_sess)):
                 fout.write('{0}\t{1}\t{2}\t{3}\t{4}\n'.format(i, val_labels[i,0], val_sess[i],
                                             val_boundaries[i][0], val_boundaries[i][1]))
+
+        val_idx, val_labels = random_pairs(val_labels, 1000000, test=True)
+        val_feats = val_feats[val_idx]
+        val_labels = np.asarray(val_labels, dtype='int32')
+        print ("Shape of val_feats: ", val_feats.shape)
 
 
         # Start running the graph
@@ -283,45 +264,48 @@ def main():
 
                         select_time1 = time.time() - start_time_select
 
-                        # Get the embeddings of all events
-                        eve_embedding = np.zeros((eve.shape[0], cfg.emb_dim), dtype='float32')
-                        for start, end in zip(range(0, eve.shape[0], cfg.batch_size),
-                                            range(cfg.batch_size, eve.shape[0]+cfg.batch_size, cfg.batch_size)):
-                            end = min(end, eve.shape[0])
-                            emb = sess.run(embedding, feed_dict={input_ph: eve[start:end], dropout_ph: 1.0})
-                            eve_embedding[start:end] = emb
+                        # select pairs for training
+                        pair_idx, train_labels = random_pairs(lab, cfg.batch_size, cfg.num_negative)
 
-                        # Second, sample triplets within sampled sessions
-                        triplet_input, negative_count = select_triplets_facenet(eve,lab,eve_embedding,cfg.triplet_per_batch,cfg.alpha,metric=cfg.metric)
-
+                        train_input = eve[pair_idx]
+                        train_labels = np.asarray(train_labels, dtype='int32')
                         select_time2 = time.time()-start_time_select-select_time1
 
+                        start_time_train = time.time()
+                        # perform training on the selected pairs
+                        err, y_pred, y_prob, _, step, summ = sess.run(
+                                [total_loss, pred, prob, train_op, global_step, summary_op],
+                                feed_dict = {input_ph: train_input,
+                                             label_ph: train_labels,
+                                             dropout_ph: cfg.keep_prob,
+                                             lr_ph: learning_rate})
+                        acc = accuracy_score(train_labels, y_pred)
 
-                        if triplet_input is not None:
-                            start_time_train = time.time()
-                            # perform training on the selected triplets
-                            err, metric_err, ver_err, y_pred, _, step, summ = sess.run(
-                                    [total_loss, metric_loss, ver_loss, pred, train_op, global_step, summary_op],
-                                    feed_dict = {input_ph: triplet_input,
-                                                dropout_ph: cfg.keep_prob,
-                                                lr_ph: learning_rate})
+                        negative_count = 0
+                        if epoch >= cfg.negative_epochs:
+                            hard_idx, hard_labels, negative_count = hard_pairs(train_labels, y_prob, 0.5)
+                            if negative_count > 0:
+                                hard_input = train_input[hard_idx]
+                                hard_labels = np.asarray(hard_labels, dtype='int32')
 
-                            train_time = time.time() - start_time_train
+                                step = sess.run(subtract_global_step_op)
+                                hard_err, y_pred, _, step = sess.run(
+                                        [total_loss, pred, train_op, global_step],
+                                        feed_dict = {input_ph: hard_input,
+                                                    label_ph: hard_labels,
+                                                    dropout_ph: cfg.keep_prob,
+                                                    lr_ph: learning_rate})
 
-                            # calculate accuracy
-                            batch_label = np.hstack((np.ones((triplet_input.shape[0]//3,),dtype='int32'),
-                                                     np.zeros((triplet_input.shape[0]//3,),dtype='int32')))
-                            acc = accuracy_score(batch_label, y_pred)
-                            print ("%s\tEpoch: [%d][%d/%d]\tEvent num: %d\tTriplet num: %d\tSelect_time1: %.3f\tSelect_time2: %.3f\tTrain_time: %.3f\tLoss %.4f" % \
-                                    (cfg.name, epoch+1, batch_count, batch_per_epoch, eve.shape[0], triplet_input.shape[0], select_time1, select_time2, train_time, err))
+                        train_time = time.time() - start_time_train
 
-                            summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err),
-                                tf.Summary.Value(tag="metric_loss", simple_value=metric_err),
-                                tf.Summary.Value(tag="ver_loss", simple_value=ver_err),
-                                tf.Summary.Value(tag="acc", simple_value=acc),
-                                tf.Summary.Value(tag="negative_count", simple_value=negative_count)])
-                            summary_writer.add_summary(summary, step)
-                            summary_writer.add_summary(summ, step)
+                        print ("%s\tEpoch: [%d][%d/%d]\tEvent num: %d\tSelect_time1: %.3f\tSelect_time2: %.3f\tTrain_time: %.3f\tLoss: %.4f" % \
+                                (cfg.name, epoch+1, batch_count, batch_per_epoch, eve.shape[0], select_time1, select_time2, train_time, err))
+
+                        summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err),
+                            tf.Summary.Value(tag="acc", simple_value=acc),
+                            tf.Summary.Value(tag="negative_count", simple_value=negative_count)])
+                        summary_writer.add_summary(summary, step)
+                        summary_writer.add_summary(summ, step)
 
                         batch_count += 1
                     
@@ -331,22 +315,23 @@ def main():
 
                 # validation on val_set
                 print ("Evaluating on validation set...")
-                val_embeddings, _ = sess.run([embedding, set_emb], feed_dict={input_ph: val_feats, dropout_ph: 1.0})
-                mAP, mPrec = utils.evaluate_simple(val_embeddings, val_labels)
+                val_err, val_pred, val_prob = sess.run([total_loss, pred, prob], feed_dict={input_ph: val_feats, label_ph: val_labels, dropout_ph: 1.0})
+                val_acc = accuracy_score(val_labels, val_pred)
 
-                summary = tf.Summary(value=[tf.Summary.Value(tag="Valiation mAP", simple_value=mAP),
-                                            tf.Summary.Value(tag="Validation mPrec@0.5", simple_value=mPrec)])
+                summary = tf.Summary(value=[tf.Summary.Value(tag="Valiation acc", simple_value=val_acc),
+                                            tf.Summary.Value(tag="Validation loss", simple_value=val_err)])
                 summary_writer.add_summary(summary, step)
-
-                # config for embedding visualization
-                config = projector.ProjectorConfig()
-                visual_embedding = config.embeddings.add()
-                visual_embedding.tensor_name = emb_var.name
-                visual_embedding.metadata_path = os.path.join(result_dir, 'metadata_val.tsv')
-                projector.visualize_embeddings(summary_writer, config)
 
                 # save model
                 saver.save(sess, os.path.join(result_dir, cfg.name+'.ckpt'), global_step=step)
+
+        # print log for analysis
+        with open(os.path.join(result_dir, 'val_results.txt'), 'w') as fout:
+            fout.write("acc = %.4f\n" % val_acc)
+            fout.write("label\tprob_0\tprob_1\tA_idx\tB_idx\n")
+            for i in range(val_prob.shape[0]):
+                fout.write("%d\t%.4f\t%.4f\t%d\t%d\n" % 
+                        (val_labels[i], val_prob[i,0],val_prob[i,1], val_idx[2*i], val_idx[2*i+1]))
 
 if __name__ == "__main__":
     main()

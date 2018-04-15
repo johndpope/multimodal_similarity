@@ -27,6 +27,33 @@ def prepare_dataset(data_dir, sessions, feat, label_dir=None):
 
     return dataset
 
+def prepare_multimodal_dataset(data_dir, sessions, feat_list, label_dir=None):
+    """
+    feat_list -- a list of multimodal feature used
+    """
+
+    dataset = []
+    for sess in sessions:
+        temp = []
+        for feat in feat_list:
+            if feat == 'resnet':
+                appendix = '.npy'
+            elif feat == 'sensors':
+                appendix = '_sensors_normalized.npy'
+            elif feat == 'sensors_sae':
+                appendix = '_sensors_normalized_sae.npy'
+            elif feat == 'segment':
+                appendix = '_seg_output.npy'
+            else:
+                raise NotImplementedError
+
+            temp.append(os.path.join(data_dir, sess+appendix))
+        temp.append(os.path.join(label_dir, sess+'_goal.pkl'))
+
+        dataset.append(temp)
+
+    return dataset
+
 def load_data_and_label(feat_path, label_path, preprocess_func=None):
     """
     Load one session (data + label)
@@ -104,7 +131,7 @@ def event_generator(tf_paths, feat_dict, context_dict, event_per_batch, num_thre
 #                        num_parallel_batches=2))
 
     if shuffled:
-        dataset = dataset.shuffle(buffer_size=600)
+        dataset = dataset.shuffle(buffer_size=200)
 
 #    padded_shapes = ({key:[] for key in context_dict},
 #                    {key:[None, value] for key,value in feat_dict.items()})
@@ -157,6 +184,46 @@ def session_generator(feat_paths, label_paths, sess_per_batch, num_threads=2, sh
     dataset = dataset.map(lambda feat_path, label_path:
                         tuple(tf.py_func(_input_parser, [feat_path, label_path],
                             [tf.float32, tf.string, tf.int32])),
+                        num_parallel_calls = num_threads)
+    dataset = dataset.prefetch(1)
+    
+    return dataset
+
+def multimodal_session_generator(feat_paths, feat2_paths, label_paths, sess_per_batch, num_threads=2, shuffled=True, preprocess_func=None):
+
+    dataset = tf.data.Dataset.from_tensor_slices((feat_paths, feat2_paths, label_paths))
+    
+    def _input_parser(feat_path, feat2_path, label_path):
+        events = []
+        events2 = []
+        labels = []
+        for s in range(sess_per_batch):
+            #### very important to have decode() for tf r1.6 ####
+            eve_batch, lab_batch, bou_batch = load_data_and_label(feat_path[s].decode(), label_path[s].decode(), preprocess_func[0])
+
+            events.append(eve_batch)
+            labels.append(lab_batch)
+
+            eve2_batch, _, _  = load_data_and_label(feat2_path[s].decode(), label_path[s].decode(), preprocess_func[1])
+
+            events2.append(eve2_batch)
+
+        events = np.concatenate(events, axis=0)
+        events2 = np.concatenate(events2, axis=0)
+        labels = np.concatenate(labels, axis=0)
+
+        if shuffled:
+            idx = np.random.permutation(events.shape[0])
+            events = events[idx]
+            events2 = events2[idx]
+            labels = labels[idx]
+
+        return events, events2, labels
+
+    # fix doc issue according to https://github.com/tensorflow/tensorflow/issues/11786
+    dataset = dataset.map(lambda feat_path, feat2_path, label_path:
+                        tuple(tf.py_func(_input_parser, [feat_path, feat2_path, label_path],
+                            [tf.float32, tf.float32, tf.int32])),
                         num_parallel_calls = num_threads)
     dataset = dataset.prefetch(1)
     

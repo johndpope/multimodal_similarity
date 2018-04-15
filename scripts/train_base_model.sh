@@ -4,17 +4,18 @@ cd ../src
 
 gpu=1
 
-#loss="triplet"
+loss="triplet"
 #loss="batch_hard"
-loss="lifted"
+#loss="lifted"
 
 num_threads=2
 sess_per_batch=3
 emb_dim=128
 #network="tsn"
-network="rtsn"
+feat="resnet"
+network="convrtsn"
 num_seg=3
-batch_size=512
+batch_size=256
 metric="squaredeuclidean"
 
 max_epochs=750
@@ -32,7 +33,7 @@ if [ "$loss" == "triplet" ]; then
 
     #pretrained_model="/mnt/work/honda_100h/results/lr_1e-3_20180326-015741/lr_1e-3.ckpt-27872"
 
-    name=base_model
+    name=debug
 
     #python base_model.py --name $name --pretrained_model $pretrained_model \
     python base_model.py --name $name \

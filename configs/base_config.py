@@ -38,12 +38,17 @@ class BaseConfig(object):
         args.tfrecords_root = os.path.join(args.DATA_ROOT, 'tfrecords2/')   # event-based
 #        args.tfrecords_root = os.path.join(args.DATA_ROOT, 'tfrecords/')   # session-based
 
+        # for multimodal input
+        args.feat = args.feat.split(',')
+        if len(args.feat) == 1:
+            args.feat = args.feat[0]
+
         # define dimensions of features
         args.MAX_LENGTH_FRAMES = 90    # maximum number of frames kept for one event
         # for parsing tfrecords
         args.feat_dict = {'resnet': 98304, 'sensors':8}
         args.context_dict = {'label': 'int', 'length': 'int'}
-        args.feat_dim = {'resnet': (8,8,1536), 'sensors':8}
+        args.feat_dim = {'resnet': (8,8,1536), 'sensors':(8,)}
 
         if args.all_session == 'all':
             args.all_session = load_session_list(os.path.join(args.DATA_ROOT, 'all_session.txt'))

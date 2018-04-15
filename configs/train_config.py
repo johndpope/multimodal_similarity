@@ -11,10 +11,12 @@ class TrainConfig(BaseConfig):
 
         self.parser.add_argument('--model_path', type=str, default=None,
                 help='absolute path of pretrained model')
+        self.parser.add_argument('--sensors_path', type=str, default=None,
+                help='absolute path of pretrained sensors model')
         self.parser.add_argument('--feat', type=str, default='resnet',
                 help='feature used: resnet | sensors')
         self.parser.add_argument('--network', type=str, default='tsn',
-                help='Network used for sequence encoding: tsn | lstm')
+                help='Network used for sequence encoding: tsn | lstm | rtsn | convtsn | convrtsn')
         self.parser.add_argument('--metric', type=str, default='squaredeuclidean',
                 help='Metric used to calculate distance: squaredeuclidean | euclidean | l1')
         self.parser.add_argument('--no_normalized', dest='normalized', action="store_false",
@@ -25,6 +27,9 @@ class TrainConfig(BaseConfig):
         self.parser.set_defaults(reverse=False)
         self.parser.add_argument('--no_soft', dest='no_soft', action="store_true",
                 help='Whether to use softplus')
+        self.parser.set_defaults(no_soft=False)
+        self.parser.add_argument('--no_joint', dest='no_joint', action="store_true",
+                help='Whether to use joint optimization')
         self.parser.set_defaults(no_soft=False)
 
         self.parser.add_argument('--num_threads', type=int, default=2,
@@ -57,6 +62,8 @@ class TrainConfig(BaseConfig):
                 help='Keep prob for dropout')
         self.parser.add_argument('--negative_epochs', type=int, default=0,
                        help='Start hard negative mining after this number of epochs')
+        self.parser.add_argument('--multimodal_epochs', type=int, default=0,
+                       help='When to start multimodal joint optimization')
 
         self.parser.add_argument('--learning_rate', type=float, default=0.05,
                        help='initial learning rate')

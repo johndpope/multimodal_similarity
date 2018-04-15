@@ -261,6 +261,18 @@ def max_pool_input(feat, flatten=True):
         new_feat = new_feat.flatten()
     return np.expand_dims(new_feat, 0)
 
+def all_pairs_tf(a, b):
+    """
+    Return a tensor of all pairs
+    a -- [batch_size1, dim]
+    b -- [batch_size2, dim]
+    """
+    dim = tf.shape(a)[1]
+    temp_a = tf.expand_dims(a, axis=1) + tf.zeros(tf.shape(tf.expand_dims(b,axis=0)), dtype=b.dtype)
+    temp_b = tf.zeros(tf.expand_dims(a, axis=1), dtype=a.dtype) + tf.expand_dims(b,axis=0)
+    return tf.concat((tf.reshape(temp_a, [-1,1,dim]), tf.reshape(temp_b, [-1,1,dim])), axis=1)
+
+
 def all_diffs_tf(a, b):
     """
     Return a tensor of all combinations of a - b
@@ -388,3 +400,73 @@ def write_configure_to_file(cfg, result_dir):
         for key, value in iteritems(vars(cfg)):
             fout.write('%s: %s\n' % (key, str(value)))
 
+
+def select_triplets_facenet(lab, eve_embedding, triplet_per_batch, alpha=0.2, num_negative=3, metric="squaredeuclidean"):
+    """
+    Select the triplets for training
+    1. Sample anchor-positive pair (try to balance imbalanced classes)
+    2. Semi-hard negative mining used in facenet
+
+    Arguments:
+    lab -- array of labels, [N,]
+    eve_embedding -- array of event embeddings, [N, emb_dim]
+    triplet_per_batch -- int
+    alpha -- float, margin
+    num_negative -- number of negative samples per anchor-positive pairs
+    metric -- metric to calculate distance
+    """
+
+    # get distance for all pairs
+    all_diff = utils.all_diffs(eve_embedding, eve_embedding)
+    all_dist = utils.cdist(all_diff, metric=metric)
+
+    idx_dict = {}
+    for i, l in enumerate(lab):
+        l = int(l)
+        if l not in idx_dict:
+            idx_dict[l] = [i]
+        else:
+            idx_dict[l].append(i)
+    for key in idx_dict:
+        random.shuffle(idx_dict[key])
+
+    # create iterators for each anchor-positive pair
+    foreground_keys = [key for key in idx_dict.keys() if not key == 0]
+    foreground_dict = {}
+    for key in foreground_keys:
+        foreground_dict[key] = itertools.permutations(idx_dict[key], 2)
+
+    triplet_input_idx = []
+    all_neg_count = []    # for monitoring active count
+    while (len(triplet_input_idx)) < triplet_per_batch * 3:
+        keys = list(foreground_dict.keys())
+        if len(keys) == 0:
+            break
+
+        for key in keys:
+            try:
+                an_idx, pos_idx = foreground_dict[key].__next__()
+            except:
+                # remove the key to prevent infinite loop
+                del foreground_dict[key]
+                continue
+            
+            pos_dist = all_dist[an_idx, pos_idx]
+            neg_dist = np.copy(all_dist[an_idx])    # important to make a copy, otherwise is reference
+            neg_dist[idx_dict[key]] = np.NaN
+
+            all_neg = np.where(np.logical_and(neg_dist-pos_dist < alpha,
+                                            pos_dist < neg_dist))[0]
+            all_neg_count.append(len(all_neg))
+
+            # continue if no proper negtive sample 
+            if len(all_neg) > 0:
+                for i in range(num_negative):
+                    neg_idx = all_neg[np.random.randint(len(all_neg))]
+
+                    triplet_input_idx.extend([an_idx, pos_idx, neg_idx])
+
+    if len(triplet_input_idx) > 0:
+        return triplet_input_idx, np.mean(all_neg_count)
+    else:
+        return None, None
