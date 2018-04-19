@@ -10,6 +10,7 @@ import networks
 from utils import evaluate
 from data_io import load_data_and_label, prepare_dataset
 from preprocess.honda_labels import honda_labels2num, honda_num2labels
+import pdb
 
 def main():
 
@@ -23,17 +24,17 @@ def main():
     n_input = cfg.feat_dim[cfg.feat]
     # load backbone model
     if cfg.network == "tsn":
-        if cfg.feat == "sensors":
-            model = networks.TSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
-        elif cfg.feat == "resnet":
-            model = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+        model = networks.TSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
     elif cfg.network == "rtsn":
-        if cfg.feat == "sensors":
-            model = networks.RTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
-        elif cfg.feat == "resnet":
-            model = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+        model = networks.RTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+    elif cfg.network == "convtsn":
+        model = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+    elif cfg.network == "convrtsn":
+        model = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
     elif cfg.network == "seq2seqtsn":
         model = networks.Seq2seqTSN(n_seg=cfg.num_seg, n_input=n_input, emb_dim=cfg.emb_dim, reverse=cfg.reverse)
+    else:
+        raise NotImplementedError
 
 
     # get the embedding
@@ -52,7 +53,13 @@ def main():
     gpu_options = tf.GPUOptions(allow_growth=True)
     sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 
-    saver = tf.train.Saver()
+    # restore variables
+    var_list = {}
+    for v in tf.global_variables():
+        var_list[cfg.variable_name+'/'+v.op.name] = v
+
+    pdb.set_trace()
+    saver = tf.train.Saver(var_list)
     with sess.as_default():
         sess.run(tf.global_variables_initializer())
 

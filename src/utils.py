@@ -1,5 +1,7 @@
 import tensorflow as tf
 import numpy as np
+import random
+import itertools
 from sklearn.metrics import average_precision_score
 import pdb
 import os
@@ -24,16 +26,16 @@ def optimize(loss, global_step, optimizer, learning_rate, update_gradient_vars, 
 
     apply_gradient_op = opt.apply_gradients(grads, global_step=global_step)
 
-    # add histograms for trainable variables
-    if log_histograms:
-        for var in tf.trainable_variables():
-            tf.summary.histogram(var.op.name, var)
-
-    # add histograms for gradients
-    if log_histograms:
-        for grad, var in grads:
-            if grad is not None:
-                tf.summary.histogram(var.op.name+'/gradients', grad)
+#    # add histograms for trainable variables
+#    if log_histograms:
+#        for var in tf.trainable_variables():
+#            tf.summary.histogram(var.op.name, var)
+#
+#    # add histograms for gradients
+#    if log_histograms:
+#        for grad, var in grads:
+#            if grad is not None:
+#                tf.summary.histogram(var.op.name+'/gradients', grad)
 
     return apply_gradient_op
 
@@ -417,8 +419,8 @@ def select_triplets_facenet(lab, eve_embedding, triplet_per_batch, alpha=0.2, nu
     """
 
     # get distance for all pairs
-    all_diff = utils.all_diffs(eve_embedding, eve_embedding)
-    all_dist = utils.cdist(all_diff, metric=metric)
+    all_diff = all_diffs(eve_embedding, eve_embedding)
+    all_dist = cdist(all_diff, metric=metric)
 
     idx_dict = {}
     for i, l in enumerate(lab):
@@ -465,6 +467,9 @@ def select_triplets_facenet(lab, eve_embedding, triplet_per_batch, alpha=0.2, nu
                     neg_idx = all_neg[np.random.randint(len(all_neg))]
 
                     triplet_input_idx.extend([an_idx, pos_idx, neg_idx])
+
+                    if len(triplet_input_idx) >= triplet_per_batch*3:
+                        return triplet_input_idx, np.mean(all_neg_count) 
 
     if len(triplet_input_idx) > 0:
         return triplet_input_idx, np.mean(all_neg_count)

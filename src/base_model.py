@@ -197,11 +197,11 @@ def main():
         # get the embedding
         input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
         dropout_ph = tf.placeholder(tf.float32, shape=[])
-        model.forward(input_ph, dropout_ph)
+        model_emb.forward(input_ph, dropout_ph)
         if cfg.normalized:
-            embedding = tf.nn.l2_normalize(model.hidden, axis=-1, epsilon=1e-10)
+            embedding = tf.nn.l2_normalize(model_emb.hidden, axis=-1, epsilon=1e-10)
         else:
-            embedding = model.hidden
+            embedding = model_emb.hidden
 
         # variable for visualizing the embeddings
         emb_var = tf.Variable([0.0], name='embeddings')
@@ -230,7 +230,7 @@ def main():
         # session iterator for session sampling
         feat_paths_ph = tf.placeholder(tf.string, shape=[None, cfg.sess_per_batch])
         label_paths_ph = tf.placeholder(tf.string, shape=[None, cfg.sess_per_batch])
-        train_data = session_generator(feat_paths_ph, label_paths_ph, sess_per_batch=cfg.sess_per_batch, num_threads=2, shuffled=False, preprocess_func=model.prepare_input)
+        train_data = session_generator(feat_paths_ph, label_paths_ph, sess_per_batch=cfg.sess_per_batch, num_threads=2, shuffled=False, preprocess_func=model_emb.prepare_input)
         train_sess_iterator = train_data.make_initializable_iterator()
         next_train = train_sess_iterator.get_next()
 
@@ -238,7 +238,7 @@ def main():
         val_feats = []
         val_labels = []
         for session in val_set:
-            eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model.prepare_input_test)    # use prepare_input_test for testing time
+            eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model_emb.prepare_input_test)    # use prepare_input_test for testing time
             val_feats.append(eve_batch)
             val_labels.append(lab_batch)
         val_feats = np.concatenate(val_feats, axis=0)
@@ -321,10 +321,10 @@ def main():
                             negative_count = 0
                         elif cfg.triplet_select == 'facenet':
                             if epoch < cfg.negative_epochs:
-                                triplet_input = select_triplets_random(eve,lab,cfg.triplet_per_batch)
+                                triplet_input = select_triplets_random(eve,lab,cfg.triplet_per_batch,num_negative=cfg.num_negative)
                                 negative_count = 0
                             else:
-                                triplet_input, negative_count = select_triplets_facenet(eve,lab,eve_embedding,cfg.triplet_per_batch,cfg.alpha,metric=cfg.metric)
+                                triplet_input, negative_count = select_triplets_facenet(eve,lab,eve_embedding,cfg.triplet_per_batch,cfg.alpha,metric=cfg.metric,num_negative=cfg.num_negative)
                         else:
                             raise NotImplementedError
 

@@ -52,12 +52,16 @@ class TrainConfig(BaseConfig):
                        help='dimensionality of embedding')
         self.parser.add_argument('--triplet_select', type=str, default='random',
                 help='methods for triplet selection: random | facenet |')
+        self.parser.add_argument('--multimodal_select', type=str, default='random',
+                help='methods for multimodal selection: random | confidence |')
         self.parser.add_argument('--alpha', type=float, default=0.2,
                        help='margin for triplet loss')
         self.parser.add_argument('--lambda_l2', type=float, default=0.0,
                        help='L2 regularization')
         self.parser.add_argument('--lambda_ver', type=float, default=0.0,
                        help='if lambda_ver > 0, then multitask learning (verification loss) is used, and lambda_ver to balance its contribution')
+        self.parser.add_argument('--lambda_multimodal', type=float, default=0.0,
+                       help='lambda for multimodal weighted_metric_loss')
         self.parser.add_argument('--keep_prob', type=float, default=1.0,
                 help='Keep prob for dropout')
         self.parser.add_argument('--negative_epochs', type=int, default=0,

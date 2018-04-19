@@ -579,21 +579,41 @@ def triplet_loss(anchor, positive, negative, alpha=0.2):
     neg_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, negative)), 1)
 
     basic_loss = tf.add(tf.subtract(pos_dist, neg_dist), alpha)
+    # FIXME: use softplus?
     return tf.reduce_mean(tf.maximum(basic_loss, 0.0), 0)
+
 
 # weighted triplet loss
-def triplet_loss(anchor, positive, negative, weights, alpha=0.2):
+def weighted_triplet_loss(anchor, positive, negative, prob_pos, prob_neg, alpha=0.2):
     """
-    weigths -- tf.float32, [N, 2]
-               first column is the similarity confidence of anchor-positive pairs >0.8
-               second column is the similarity confidence of anchor-negative pairs < 0.2
+    prob_pos -- tf.float32, [N,] similarity confidence of anchor-positive pairs
+    prob_neg -- tf.float32, [N,] similarity confidence of anchor-negative pairs
+
+    4-class problem:
+        § p1(1-p2)L(A,B,C)
+        § (1-p1)p2L(A,C,B)
+        § p1p2[L(A,B,A)+L(A,C,A)]/2
+        § (1-p1)(1-p2)[L(A,A,B)+L(A,A,C)]/2
     """
 
-    pos_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, positive)), 1)
-    neg_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, negative)), 1)
+    def _triplet_loss(anc, pos, neg, alpha):
+        pos_dist = tf.reduce_sum(tf.square(tf.subtract(anc, pos)), 1)
+        neg_dist = tf.reduce_sum(tf.square(tf.subtract(anc, neg)), 1)
+        basic_loss = tf.add(tf.subtract(pos_dist, neg_dist), alpha)
+        # FIXME: use softplus?
+        return tf.maximum(basic_loss, 0.0)
 
-    basic_loss = tf.add(tf.subtract(pos_dist, neg_dist), alpha)
-    return tf.reduce_mean(tf.maximum(basic_loss, 0.0), 0)
+    w1 = tf.multiply(prob_pos, (1-prob_neg))
+    w2 = tf.multiply((1-prob_pos), prob_neg)
+    w3 = tf.multiply(prob_pos, prob_neg)
+    w4 = tf.multiply((1-prob_pos), (1-prob_neg))
+
+    weighted_loss = tf.multiply(w1, _triplet_loss(anchor, positive, negative, alpha)) + \
+                    tf.multiply(w2, _triplet_loss(anchor, negative, positive, alpha)) + \
+                    tf.multiply(w3, 0.5*(_triplet_loss(anchor, positive, anchor, -alpha*2)+_triplet_loss(anchor, negative, anchor, -alpha*2))) + \
+                    tf.multiply(w4, 0.5*(_triplet_loss(anchor, anchor, positive, alpha*2)+_triplet_loss(anchor, anchor, negative, alpha*2)))
+
+    return tf.reduce_mean(weighted_loss, 0), tf.stack([w1,w2,w3,w4], axis=1)
 
 # Weighted Batch-hard loss
 # reference: In Defense of the Triplet Loss for Person Re-Identification

@@ -11,12 +11,19 @@ class EvalConfig(BaseConfig):
 
         self.parser.add_argument('--model_path', type=str, default=None,
                 help='absolute path of pretrained model (including snapshot number')
+        self.parser.add_argument('--sensors_path', type=str, default=None,
+                help='absolute path of pretrained model (including snapshot number')
+        self.parser.add_argument('--variable_name', type=str,
+                help='variable name for restoring model, e.g. modality_core')
+
         self.parser.add_argument('--feat', type=str, default='resnet',
                 help='feature used')
         self.parser.add_argument('--network', type=str, default='tsn',
                 help='Network used for sequence encoding')
         self.parser.add_argument('--preprocess_func', type=str, default='mean',
                 help='Preprocessing function for input, ignored when model is defined: mean | max')
+        self.parser.add_argument('--use_output', dest='use_output', action="store_true",
+                help='Whether to use prediction output as embedding')
 
         self.parser.add_argument('--num_seg', type=int, default=3,
                        help='# of segment for a sequence')
@@ -34,4 +41,5 @@ class EvalConfig(BaseConfig):
         self.parser.add_argument('--reverse', dest='reverse', action="store_true",
                 help='Whether to reverse input sequence')
         self.parser.set_defaults(reverse=False)
+
 
