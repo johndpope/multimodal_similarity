@@ -3,7 +3,6 @@ import os
 import tensorflow as tf
 import numpy as np
 import pickle as pkl
-import time
 
 sys.path.append('../')
 from configs.eval_config import EvalConfig
@@ -22,32 +21,43 @@ def main():
     test_session = cfg.test_session
     test_set = prepare_dataset(cfg.feature_root, test_session, cfg.feat, cfg.label_root)
 
-    n_input = cfg.feat_dim[cfg.feat]
-    # load backbone model
-    if cfg.network == "tsn":
-        model = networks.TSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
-    elif cfg.network == "rtsn":
-        model = networks.RTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
-    elif cfg.network == "convtsn":
-        model = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
-    elif cfg.network == "convrtsn":
-        model = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
-    elif cfg.network == "seq2seqtsn":
-        model = networks.Seq2seqTSN(n_seg=cfg.num_seg, n_input=n_input, emb_dim=cfg.emb_dim, reverse=cfg.reverse)
-    elif cfg.network == "convbirtsn":
-        model = networks.ConvBiRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
-    else:
-        raise NotImplementedError
-
 
     # get the embedding
-    if cfg.feat == "sensors":
-        input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None])
-    elif cfg.feat == "resnet":
+    with tf.variable_scope("modality_core"):
+        # load backbone model
+        if cfg.network == "convtsn":
+            model_emb = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+        elif cfg.network == "convrtsn":
+            model_emb = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+        else:
+            raise NotImplementedError
+
         input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
-    dropout_ph = tf.placeholder(tf.float32, shape=[])
-    model.forward(input_ph, dropout_ph)
-    embedding = tf.nn.l2_normalize(model.hidden, axis=1, epsilon=1e-10, name='embedding')
+        dropout_ph = tf.placeholder(tf.float32, shape=[])
+        model_emb.forward(input_ph, dropout_ph)    # for lstm has variable scope
+
+    with tf.variable_scope("hallucination_sensors"):
+        sensors_emb_dim = 32
+        # load backbone model
+        if cfg.network == "convtsn":
+            hal_emb_sensors = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim)
+        elif cfg.network == "convrtsn":
+            hal_emb_sensors = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim)
+        else:
+            raise NotImplementedError
+
+        hal_emb_sensors.forward(input_ph, dropout_ph)    # for lstm has variable scope
+
+    # Core branch
+    if cfg.normalized:
+        embedding = tf.nn.l2_normalize(model_emb.hidden, axis=-1, epsilon=1e-10)
+        embedding_hal_sensors = tf.nn.l2_normalize(hal_emb_sensors.hidden, axis=-1, epsilon=1e-10)
+    else:
+        embedding = model_emb.hidden
+        embedding_hal_sensors = hal_emb_sensors.hidden
+
+    embedding_fused = tf.concat((embedding, embedding_hal_sensors), axis=1)
+
 
     # Testing
     if cfg.gpu:
@@ -56,12 +66,7 @@ def main():
     gpu_options = tf.GPUOptions(allow_growth=True)
     sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 
-    # restore variables
-    var_list = {}
-    for v in tf.global_variables():
-        var_list[cfg.variable_name+v.op.name] = v
-
-    saver = tf.train.Saver(var_list)
+    saver = tf.train.Saver(tf.global_variables())
     with sess.as_default():
         sess.run(tf.global_variables_initializer())
 
@@ -75,10 +80,10 @@ def main():
             session_id = os.path.basename(session[1]).split('_')[0]
             print ("{0} / {1}: {2}".format(i, len(test_set), session_id))
 
-            eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model.prepare_input_test)    # use prepare_input_test for testing time
+            eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model_emb.prepare_input_test)    # use prepare_input_test for testing time
 
             start_time = time.time()
-            emb = sess.run(embedding, feed_dict={input_ph: eve_batch, dropout_ph: 1.0})
+            emb = sess.run(embedding_fused, feed_dict={input_ph: eve_batch, dropout_ph: 1.0})
             duration += time.time() - start_time
 
             eve_embeddings.append(emb)

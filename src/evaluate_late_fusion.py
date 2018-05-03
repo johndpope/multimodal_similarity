@@ -9,7 +9,7 @@ from configs.eval_config import EvalConfig
 import networks
 from utils import evaluate
 from data_io import load_data_and_label, prepare_dataset
-from preprocess.honda_labels import honda_labels2num, honda_num2labels
+from preprocess.label_transfer import honda_num2labels
 
 def main():
 

@@ -534,3 +534,34 @@ Test overlapping of two clusters by measuring intra_class similarity (distance)
 #print ("Joint:", joint)
 #print ("Indicator:", indicator)
 
+
+"""
+Test dcca_loss
+"""
+
+import tensorflow as tf
+from sklearn.cross_decomposition import CCA
+from scipy.stats.stats import pearsonr
+sys.path.append('../src/')
+from networks import dcca_loss
+
+U = np.random.random_sample(1800).reshape(600,3)
+V = np.random.random_sample(1800).reshape(600,3)
+result = 0.0
+for i in range(3):
+    result += pearsonr(U[:,i], V[:,i])[0]
+print ("Raw data results: ", result)
+
+cca = CCA(n_components=3)
+U_c, V_c = cca.fit_transform(U, V)
+result = 0.0
+for i in range(3):
+    result += pearsonr(U_c[:,i], V_c[:,i])[0]
+print ("Sklearn results: ", result)
+
+X1 = tf.placeholder(tf.float32, shape=[600,3])
+X2 = tf.placeholder(tf.float32, shape=[600,3])
+corr = dcca_loss(X1, X2, K=3, rcov1=1e-4, rcov2=1e-4)
+with tf.Session() as sess:
+    correlation = sess.run(corr, feed_dict={X1: U, X2: V})
+print ("dcca results:", -correlation)

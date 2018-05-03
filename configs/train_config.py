@@ -32,6 +32,9 @@ class TrainConfig(BaseConfig):
                 help='Whether to use joint optimization')
         self.parser.set_defaults(no_soft=False)
 
+        self.parser.add_argument('--label_num', type=int, default=93,
+                       help='number of sessions with labels used for training')
+
         self.parser.add_argument('--num_threads', type=int, default=2,
                        help='number of threads for loading data in parallel')
         self.parser.add_argument('--batch_size', type=int, default=4,
@@ -50,6 +53,14 @@ class TrainConfig(BaseConfig):
                        help='# of segment for a sequence')
         self.parser.add_argument('--emb_dim', type=int, default=256,
                        help='dimensionality of embedding')
+        self.parser.add_argument('--n_h', type=int, default=8,
+                       help='height of the feature map')
+        self.parser.add_argument('--n_w', type=int, default=8,
+                       help='width of the feature map')
+        self.parser.add_argument('--n_C', type=int, default=20,
+                       help='number of output channels')
+        self.parser.add_argument('--n_input', type=int, default=1536,
+                       help='dim of input')
         self.parser.add_argument('--triplet_select', type=str, default='random',
                 help='methods for triplet selection: random | facenet |')
         self.parser.add_argument('--multimodal_select', type=str, default='random',

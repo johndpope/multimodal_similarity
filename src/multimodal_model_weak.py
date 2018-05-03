@@ -1,5 +1,5 @@
 """
-Multimodal similarity learning
+Multimodal similarity learning with partial labeled data
 """
 
 from datetime import datetime
@@ -154,6 +154,7 @@ def main():
     train_session = cfg.train_session
     train_set = prepare_multimodal_dataset(cfg.feature_root, train_session, cfg.feat, cfg.label_root)
     batch_per_epoch = len(train_set)//cfg.sess_per_batch
+
 
     val_session = cfg.val_session
     val_set = prepare_multimodal_dataset(cfg.feature_root, val_session, cfg.feat, cfg.label_root)
@@ -376,8 +377,7 @@ def main():
                             eve_embedding[start:end] = np.copy(emb)
     
                         # sample triplets within sampled sessions
-                        all_diff = utils.all_diffs(eve_embedding, eve_embedding)
-                        triplet_input_idx, active_count = utils.select_triplets_facenet(lab,utils.cdist(all_diff,metric=cfg.metric),cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
+                        triplet_input_idx, negative_count = utils.select_triplets_facenet(lab,eve_embedding,cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
                         if triplet_input_idx is None:
                             continue
 
@@ -453,8 +453,7 @@ def main():
                                 (cfg.name, epoch+1, batch_count, batch_per_epoch, eve.shape[0], triplet_input.shape[0]//3, load_time, select_time, err))
     
                         summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err),
-                                    tf.Summary.Value(tag="active_count", simple_value=active_count),
-                                    tf.Summary.Value(tag="triplet_num", simple_value=triplet_input.shape[0]//3),
+                                    tf.Summary.Value(tag="negative_count", simple_value=negative_count),
                                     tf.Summary.Value(tag="multimodal_count", simple_value=multimodal_count),
                                     tf.Summary.Value(tag="metric_loss", simple_value=metric_err),
                                     tf.Summary.Value(tag="weghted_metric_loss", simple_value=mul_err)])

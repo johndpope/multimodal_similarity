@@ -197,6 +197,7 @@ def evaluate(embeddings, labels, normalize=False, standardize=False, alpha=0.5):
         count[row] += 1
 
     confusion_matrix[1:] /= count[1:]
+    count[0] = (labels==0).sum()    # number of background
     confusion = {"confusion_matrix": confusion_matrix, "labels": unique_labels}
 
     # get recall @ K
@@ -403,7 +404,7 @@ def write_configure_to_file(cfg, result_dir):
             fout.write('%s: %s\n' % (key, str(value)))
 
 
-def select_triplets_facenet(lab, eve_embedding, triplet_per_batch, alpha=0.2, num_negative=3, metric="squaredeuclidean"):
+def select_triplets_facenet(lab, all_dist, triplet_per_batch, alpha=0.2, num_negative=3):
     """
     Select the triplets for training
     1. Sample anchor-positive pair (try to balance imbalanced classes)
@@ -411,16 +412,11 @@ def select_triplets_facenet(lab, eve_embedding, triplet_per_batch, alpha=0.2, nu
 
     Arguments:
     lab -- array of labels, [N,]
-    eve_embedding -- array of event embeddings, [N, emb_dim]
+    all_dist -- distance matrix
     triplet_per_batch -- int
     alpha -- float, margin
     num_negative -- number of negative samples per anchor-positive pairs
-    metric -- metric to calculate distance
     """
-
-    # get distance for all pairs
-    all_diff = all_diffs(eve_embedding, eve_embedding)
-    all_dist = cdist(all_diff, metric=metric)
 
     idx_dict = {}
     for i, l in enumerate(lab):
@@ -463,7 +459,7 @@ def select_triplets_facenet(lab, eve_embedding, triplet_per_batch, alpha=0.2, nu
 
             # continue if no proper negtive sample 
             if len(all_neg) > 0:
-                for i in range(num_negative):
+                for i in range(min(len(all_neg), num_negative)):
                     neg_idx = all_neg[np.random.randint(len(all_neg))]
 
                     triplet_input_idx.extend([an_idx, pos_idx, neg_idx])

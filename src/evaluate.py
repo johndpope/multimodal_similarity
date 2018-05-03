@@ -9,7 +9,7 @@ from configs.eval_config import EvalConfig
 import networks
 from utils import evaluate, mean_pool_input, max_pool_input
 from data_io import load_data_and_label
-from preprocess.honda_labels import honda_labels2num, honda_num2labels
+from preprocess.label_transfer import honda_num2labels
 
 def prepare_dataset(data_dir, sessions, feat, label_dir=None):
 

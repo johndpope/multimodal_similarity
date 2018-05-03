@@ -257,6 +257,68 @@ class PairSim(object):
         self.logits = tf.nn.xw_plus_b(h_drop, self.W_o, self.b_o)    # for computing loss
         self.prob = tf.nn.softmax(self.logits)
 
+class PDDM(object):
+    """ PDDM layer
+    Input a pair of sample A, B
+    Ouput a score with 0 to 1: whether A, B is similar with each other
+
+    reference: Local Similarity-Aware Deep Feature Embedding
+    """
+
+    def name(self):
+        return "PDDM"
+
+    def __init__(self, n_input=128):
+        self.n_input = n_input
+
+        with tf.variable_scope("PDDM"):
+            self.W_u = tf.get_variable(name="W_u", shape=[self.n_input, self.n_input],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_u = tf.get_variable(name="b_u", shape=[self.n_input],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+            self.W_v = tf.get_variable(name="W_v", shape=[self.n_input, self.n_input],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_v = tf.get_variable(name="b_v", shape=[self.n_input],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+            self.W_c = tf.get_variable(name="W_c", shape=[2*self.n_input, self.n_input],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_c = tf.get_variable(name="b_c", shape=[self.n_input],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+            self.W_s = tf.get_variable(name="W_s", shape=[self.n_input, 2],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_s = tf.get_variable(name="b_s", shape=[2],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+
+    def forward(self, x):
+        """
+        x -- feature pair, [batch_size, 2, n_input]
+        """
+
+        x_i, x_j = tf.unstack(x, 2, 1)
+
+        u = tf.abs(x_i - x_j)
+        v = 0.5 * (x_i + x_j)
+
+        uu = tf.nn.l2_normalize(tf.nn.relu(tf.nn.xw_plus_b(u, self.W_u, self.b_u)), axis=-1,epsilon=1e-10)
+        vv = tf.nn.l2_normalize(tf.nn.relu(tf.nn.xw_plus_b(v, self.W_v, self.b_v)), axis=-1,epsilon=1e-10)
+
+        c = tf.nn.relu(tf.nn.xw_plus_b(tf.concat((uu,vv), axis=1), self.W_c, self.b_c))
+        self.logits = tf.nn.xw_plus_b(c, self.W_s, self.b_s)
+        self.prob = tf.nn.softmax(self.logits)
+
+
 class OutputLayer(object):
     def name(self):
         return "OutputLayer"
@@ -368,6 +430,56 @@ class TSN(object):
         h2_reshape = tf.reshape(h2, [-1, self.n_seg, self.emb_dim])
 
         self.hidden = tf.reduce_mean(h2_reshape, axis=1)
+
+# Bidirectional Recurrent convolutional TSN
+class ConvBiRTSN(object):
+    def name(self):
+        return "ConvBiRTSN"
+
+    def __init__(self, n_seg=3, n_input=1536, n_h=8, n_w=8, n_C=20, emb_dim=128):
+
+        self.n_seg = n_seg
+        self.n_C = n_C
+        self.n_h = n_h
+        self.n_w = n_w
+        self.n_input = n_input
+        self.emb_dim = emb_dim
+
+        self.prepare_input = functools.partial(utils.tsn_prepare_input, self.n_seg)
+        self.prepare_input_test = functools.partial(utils.tsn_prepare_input_test, self.n_seg)
+        self.prepare_input_tf = functools.partial(utils.tsn_prepare_input_tf, self.n_seg)
+
+        with tf.variable_scope("ConvBiRTSN"):
+            self.W_emb = tf.get_variable(name="W_emb", shape=[1,1,n_input,self.n_C],
+                            initializer=tf.contrib.layers.xavier_initializer(),
+                            regularizer=tf.contrib.layers.l2_regularizer(1.),
+                            trainable=True)
+            # forward pass
+            self.fw_cell = tf.contrib.rnn.LSTMCell(self.emb_dim//2, forget_bias=1.0)
+            self.bw_cell = tf.contrib.rnn.LSTMCell(self.emb_dim//2, forget_bias=1.0)
+
+    def forward(self, x, keep_prob):
+        """
+        x -- input features, [batch_size, n_seg, n_h, n_w, n_input]
+        """
+
+        def RNN(x):
+            fw_dropout_cell = tf.contrib.rnn.DropoutWrapper(self.fw_cell, input_keep_prob=keep_prob)    # onlyt input dropout is used
+            bw_dropout_cell = tf.contrib.rnn.DropoutWrapper(self.bw_cell, input_keep_prob=keep_prob)    # onlyt input dropout is used
+            seq_len = tf.ones((tf.shape(x)[0],), dtype='int32') * self.n_seg
+
+            outputs, _ = tf.nn.bidirectional_dynamic_rnn(fw_dropout_cell, bw_dropout_cell, x, seq_len, dtype=tf.float32, scope="ConvBiRTSN")
+
+            # concatenate outputs
+            encoder_outputs = tf.concat(outputs, 2)
+            return encoder_outputs[:, -1]
+
+        x_flat = tf.reshape(x, [-1, self.n_h, self.n_w, self.n_input])
+        x_emb = tf.nn.relu(tf.nn.conv2d(input=x_flat, filter=self.W_emb,
+                                        strides=[1, 1, 1, 1], padding="VALID",
+                                        data_format="NHWC"))
+        x_emb = tf.reshape(x_emb, [-1, self.n_seg, self.n_h*self.n_w*self.n_C])
+        self.hidden = RNN(x_emb)
 
 
 # Recurrent convolutional TSN
@@ -692,3 +804,46 @@ def lifted_loss(dists, pids, margin, weighted=True):
         num_active = 1.0
 
     return loss, num_active, diff, weights, furthest_positive, closest_negative
+
+
+# Deep CCA loss, reference: On Deep Multi-view Representation Learning
+def dcca_loss(X1, X2, K=0, rcov1=1e-4, rcov2=1e-4):
+    """
+    X1 / X2: network output for view 1 / 2, shape: [N, dim1 or dim2]
+    K:  dimensionality of CCA projection
+    rcov1 / rcov2: optional regularization parameter for view 1/2
+
+    Tested in ../preprocess/script.py, works similarly as cca in sklearn
+    """
+
+    N, d1 = X1.get_shape().as_list()
+    N, d2 = X2.get_shape().as_list()
+    if K == 0:
+        K = min(d1, d2)
+
+    # remove mean
+    X1 -= tf.reduce_mean(X1, axis=0, keepdims=True) 
+    X2 -= tf.reduce_mean(X2, axis=0, keepdims=True) 
+
+    S11 = tf.matmul(tf.transpose(X1), X1) / (N-1) + rcov1 * tf.eye(d1, dtype=X1.dtype)
+    S22 = tf.matmul(tf.transpose(X2), X2) / (N-1) + rcov2 * tf.eye(d2, dtype=X2.dtype)
+    S12 = tf.matmul(tf.transpose(X1), X2) / (N-1)
+    D1, V1 = tf.self_adjoint_eig(S11)
+    D2, V2 = tf.self_adjoint_eig(S22)
+    # for numerical stability
+    # The coordinates are returned in a 2-D tensor where the first dimension (rows) represents the number of true elements, and the second dimension (columns) represents the coordinates of the true elements.
+    idx1 = tf.squeeze(tf.where(tf.greater(D1, 1e-12)))
+    D1 = tf.gather(D1, idx1)
+    V1 = tf.gather(V1, idx1, axis=1)
+    idx2 = tf.squeeze(tf.where(tf.greater(D2, 1e-12)))
+    D2 = tf.gather(D2, idx2)
+    V2 = tf.gather(V2, idx2, axis=1)
+
+    K11 = tf.matmul(tf.matmul(V1, tf.diag(tf.pow(D1, -0.5))), tf.transpose(V1))
+    K22 = tf.matmul(tf.matmul(V2, tf.diag(tf.pow(D2, -0.5))), tf.transpose(V2))
+    T = tf.matmul(tf.matmul(K11, S12), K22)
+    D, U, V = tf.svd(T)
+    
+    corr = tf.reduce_sum(D[:K])
+    return -corr    # maximize correlation is to minimze the negative of it
+

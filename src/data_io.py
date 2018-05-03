@@ -5,6 +5,10 @@ import tensorflow as tf
 import random
 import pdb
 
+import sys
+sys.path.append('../')
+from preprocess.label_transfer import label_transfer, MIN_LENGTH, MAX_LENGTH, MIN_LENGTH_BACKGROUND
+
 def prepare_dataset(data_dir, sessions, feat, label_dir=None):
 
     if feat == 'resnet':
@@ -59,9 +63,6 @@ def load_data_and_label(feat_path, label_path, preprocess_func=None):
     Load one session (data + label)
     """
 
-    MIN_LENGTH = 5
-    MAX_LENGTH = 90
-
     if preprocess_func is None:
         # identity function
         preprocess_func = lambda x: x
@@ -75,15 +76,20 @@ def load_data_and_label(feat_path, label_path, preprocess_func=None):
     for i in range(len(label['G'])):
         length = label['s'][i+1] - label['s'][i]
         if length > MIN_LENGTH:    # ignore short (background) clips
+            if label_transfer[label['G'][i]] == 0 and length < MIN_LENGTH_BACKGROUND:
+                continue
+
             length = min(length, MAX_LENGTH)
             events.append(preprocess_func(feats[label['s'][i] : label['s'][i]+length]))
-            labels.append(label['G'][i])
+            # label transfer
+            labels.append(label_transfer[label['G'][i]])
             boundary.append((label['s'][i], label['s'][i]+length))
 
     events = np.concatenate(events, axis=0).astype('float32')
-    labels = np.asarray(labels).reshape(-1,1)
+    labels = np.asarray(labels, dtype='int32').reshape(-1,1)
 
     return events, labels, boundary
+
 
 def event_generator(tf_paths, feat_dict, context_dict, event_per_batch, num_threads=2, shuffled=True, preprocess_func=None):
     """
@@ -197,6 +203,7 @@ def multimodal_session_generator(feat_paths, feat2_paths, label_paths, sess_per_
         events = []
         events2 = []
         labels = []
+        sess = []
         for s in range(sess_per_batch):
             #### very important to have decode() for tf r1.6 ####
             eve_batch, lab_batch, bou_batch = load_data_and_label(feat_path[s].decode(), label_path[s].decode(), preprocess_func[0])
@@ -208,22 +215,26 @@ def multimodal_session_generator(feat_paths, feat2_paths, label_paths, sess_per_
 
             events2.append(eve2_batch)
 
+            sess.extend([os.path.basename(feat_path[s].decode()).split('.')[0]] * eve_batch.shape[0])
+
         events = np.concatenate(events, axis=0)
         events2 = np.concatenate(events2, axis=0)
         labels = np.concatenate(labels, axis=0)
+        sess = np.asarray(sess).reshape(-1,1)
 
         if shuffled:
             idx = np.random.permutation(events.shape[0])
             events = events[idx]
             events2 = events2[idx]
             labels = labels[idx]
+            sess = sess[idx]
 
-        return events, events2, labels
+        return events, events2, labels, sess
 
     # fix doc issue according to https://github.com/tensorflow/tensorflow/issues/11786
     dataset = dataset.map(lambda feat_path, feat2_path, label_path:
                         tuple(tf.py_func(_input_parser, [feat_path, feat2_path, label_path],
-                            [tf.float32, tf.float32, tf.int32])),
+                            [tf.float32, tf.float32, tf.int32, tf.string])),
                         num_parallel_calls = num_threads)
     dataset = dataset.prefetch(1)
     

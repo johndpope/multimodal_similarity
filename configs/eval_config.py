@@ -13,7 +13,7 @@ class EvalConfig(BaseConfig):
                 help='absolute path of pretrained model (including snapshot number')
         self.parser.add_argument('--sensors_path', type=str, default=None,
                 help='absolute path of pretrained model (including snapshot number')
-        self.parser.add_argument('--variable_name', type=str,
+        self.parser.add_argument('--variable_name', type=str, default="",
                 help='variable name for restoring model, e.g. modality_core')
 
         self.parser.add_argument('--feat', type=str, default='resnet',

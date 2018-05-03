@@ -1,28 +1,28 @@
-import pickle as pkl
+# label version for NIPS experiments, 04/25/2018
 
-f = open('/mnt/work/Stanford40/ImageSplits/actions.txt', 'r')
-count = 0
-lines = f.read().strip().split('\n')
-lines = [l.split('\t')[0] for l in lines[1:]]
+MIN_LENGTH = 5    # remove short sequences
+MIN_LENGTH_BACKGROUND = 15    # remove short background sequences
+MAX_LENGTH = 45    # maximum sequence length
 
-print lines
+label_transfer = {0: 0,    # background,
+                  1: 1,    # intersection passing
+                  2: 2,    # left turn
+                  3: 3,    # right turn
+                  4: 4,    # left lane change
+                  5: 5,    # right lane change
+                  6: 1,    # crosswalk passing --> intersection passing
+                  7: 6,    # U-turn
+                  8: 4,    # left lane branch --> left lane change
+                  9: 5,    # right lane branch --> right lane change
+                  10: 0    # merge --> background
+                  }
 
-label2num = {}
-num2label = {}
-count = 0
-for l in lines:
-    label2num[l] = count
-    num2label[count] = l
-    count += 1
 
-# build dictionary
-text_dict = {}
-count = 0
-for l in lines:
-    for ll in l.split('_'):
-        if ll not in text_dict:
-            text_dict[ll] = count
-            count += 1
-
-label = {'label2num': label2num, 'num2label': num2label, 'text_dict':text_dict}
-pkl.dump(label, open('/mnt/work/Stanford40/results/label.pkl', 'w'))
+honda_num2labels = {0: 'Background',
+                    1: 'Intersection passing',
+                    2: 'Left turn',
+                    3: 'Right turn',
+                    4: 'Left lane change',
+                    5: 'Right lane change',
+                    6: 'U-turn'
+                    }

@@ -1,6 +1,5 @@
 """
-Old version without using tfrecords pipeline
-03/25/2018
+Train PDDM models
 """
 
 from datetime import datetime
@@ -14,6 +13,7 @@ import itertools
 import random
 import pdb
 from six import iteritems
+from sklearn.metrics import average_precision_score
 import glob
 
 sys.path.append('../')
@@ -119,16 +119,17 @@ def main():
         elif cfg.network == "convtsn":
             model_emb = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
         elif cfg.network == "convrtsn":
-            model_emb = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+            model_emb = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim, n_h=cfg.n_h, n_w=cfg.n_w, n_C=cfg.n_C, n_input=cfg.n_input)
         elif cfg.network == "convbirtsn":
             model_emb = networks.ConvBiRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
         else:
             raise NotImplementedError
+        model_ver = networks.PDDM(n_input=cfg.emb_dim)
 
         # get the embedding
         if cfg.feat == "sensors":
             input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None])
-        elif cfg.feat == "resnet":
+        elif cfg.feat == "resnet" or cfg.feat == "segment":
             input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
         dropout_ph = tf.placeholder(tf.float32, shape=[])
         model_emb.forward(input_ph, dropout_ph)
@@ -150,8 +151,14 @@ def main():
         anchor, positive, negative = tf.unstack(tf.reshape(embedding, [-1,3,cfg.emb_dim]), 3, 1)
         metric_loss = networks.triplet_loss(anchor, positive, negative, cfg.alpha)
 
+        model_ver.forward(tf.stack((anchor, positive), axis=1))
+        pddm_ap = model_ver.prob[:, 0]
+        model_ver.forward(tf.stack((anchor, negative), axis=1))
+        pddm_an = model_ver.prob[:, 0]
+        pddm_loss = tf.reduce_mean(tf.maximum(tf.add(tf.subtract(pddm_ap, pddm_an), 0.6), 0.0), 0)
+
         regularization_loss = tf.reduce_sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
-        total_loss = metric_loss + regularization_loss * cfg.lambda_l2
+        total_loss = pddm_loss + 0.5 * metric_loss + regularization_loss * cfg.lambda_l2
 
         tf.summary.scalar('learning_rate', lr_ph)
         train_op = utils.optimize(total_loss, global_step, cfg.optimizer,
@@ -241,22 +248,26 @@ def main():
 
                         select_time1 = time.time() - start_time_select
 
-                        # Get the embeddings of all events
-                        eve_embedding = np.zeros((eve.shape[0], cfg.emb_dim), dtype='float32')
-                        for start, end in zip(range(0, eve.shape[0], cfg.batch_size),
-                                            range(cfg.batch_size, eve.shape[0]+cfg.batch_size, cfg.batch_size)):
-                            end = min(end, eve.shape[0])
-                            emb = sess.run(embedding, feed_dict={input_ph: eve[start:end], dropout_ph: 1.0})
-                            eve_embedding[start:end] = emb
+                        # Get the similarity of all events
+                        sim_prob = np.zeros((eve.shape[0], eve.shape[0]), dtype='float32')*np.nan
+                        comb = list(itertools.combinations(range(eve.shape[0]), 2))
+                        for start, end in zip(range(0, len(comb), cfg.batch_size),
+                                            range(cfg.batch_size, len(comb)+cfg.batch_size, cfg.batch_size)):
+                            end = min(end, len(comb))
+                            comb_idx = []
+                            for c in comb[start:end]:
+                                comb_idx.extend([c[0], c[1], c[1]])
+                            emb = sess.run(pddm_ap, feed_dict={input_ph: eve[comb_idx], dropout_ph: 1.0})
+                            for i in range(emb.shape[0]):
+                                sim_prob[comb[start+i][0], comb[start+i][1]] = emb[i]
+                                sim_prob[comb[start+i][1], comb[start+i][0]] = emb[i]
 
                         # Second, sample triplets within sampled sessions
                         if cfg.triplet_select == 'random':
                             triplet_input = select_triplets_random(eve,lab,cfg.triplet_per_batch)
                             negative_count = 0
                         elif cfg.triplet_select == 'facenet':
-                            # get distance for all pairs
-                            all_diff = utils.all_diffs(eve_embedding, eve_embedding)
-                            triplet_input_idx, active_count = utils.select_triplets_facenet(lab,utils.cdist(all_diff,metric=cfg.metric),cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
+                            triplet_input_idx, active_count = utils.select_triplets_facenet(lab,sim_prob,cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
                         else:
                             raise NotImplementedError
 
@@ -294,10 +305,36 @@ def main():
                 val_embeddings, _ = sess.run([embedding, set_emb], feed_dict={input_ph: val_feats, dropout_ph: 1.0})
                 mAP, mPrec = utils.evaluate_simple(val_embeddings, val_labels)
 
-                summary = tf.Summary(value=[tf.Summary.Value(tag="Valiation mAP", simple_value=mAP),
+
+                val_sim_prob = np.zeros((val_feats.shape[0], val_feats.shape[0]), dtype='float32')*np.nan
+                val_comb = list(itertools.combinations(range(val_feats.shape[0]), 2))
+                for start, end in zip(range(0, len(val_comb), cfg.batch_size),
+                                    range(cfg.batch_size, len(val_comb)+cfg.batch_size, cfg.batch_size)):
+                    end = min(end, len(val_comb))
+                    comb_idx = []
+                    for c in val_comb[start:end]:
+                        comb_idx.extend([c[0], c[1], c[1]])
+                    emb = sess.run(pddm_ap, feed_dict={input_ph: val_feats[comb_idx], dropout_ph: 1.0})
+                    for i in range(emb.shape[0]):
+                        val_sim_prob[val_comb[start+i][0], val_comb[start+i][1]] = emb[i]
+                        val_sim_prob[val_comb[start+i][1], val_comb[start+i][0]] = emb[i]
+
+                mAP_PDDM = 0.0
+                count = 0
+                for i in range(val_labels.shape[0]):
+                    if val_labels[i] > 0:
+                        temp_labels = np.delete(val_labels, i, 0)
+                        temp = np.delete(val_sim_prob, i, 1)
+                        mAP_PDDM += average_precision_score(np.squeeze(temp_labels==val_labels[i,0]),
+                                        np.squeeze(1 - temp[i]))
+                        count += 1
+                mAP_PDDM /= count
+
+                summary = tf.Summary(value=[tf.Summary.Value(tag="Validation mAP", simple_value=mAP),
+                                            tf.Summary.Value(tag="Validation mAP_PDDM", simple_value=mAP_PDDM),
                                             tf.Summary.Value(tag="Validation mPrec@0.5", simple_value=mPrec)])
                 summary_writer.add_summary(summary, step)
-                print ("Epoch: [%d]\tmAP: %.4f\tmPrec: %.4f" % (epoch+1,mAP,mPrec))
+                print ("Epoch: [%d]\tmAP: %.4f\tmPrec: %.4f\tmAP_PDDM: %.4f" % (epoch+1,mAP,mPrec,mAP_PDDM))
 
                 # config for embedding visualization
                 config = projector.ProjectorConfig()
