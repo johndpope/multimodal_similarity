@@ -22,76 +22,6 @@ from data_io import multimodal_session_generator, load_data_and_label, prepare_m
 import networks
 import utils
 
-def select_triplets_facenet(lab, eve_embedding, triplet_per_batch, alpha=0.2, num_negative=3, metric="squaredeuclidean"):
-    """
-    Select the triplets for training
-    1. Sample anchor-positive pair (try to balance imbalanced classes)
-    2. Semi-hard negative mining used in facenet
-
-    Arguments:
-    lab -- array of labels, [N,]
-    eve_embedding -- array of event embeddings, [N, emb_dim]
-    triplet_per_batch -- int
-    alpha -- float, margin
-    num_negative -- number of negative samples per anchor-positive pairs
-    metric -- metric to calculate distance
-    """
-
-    # get distance for all pairs
-    all_diff = utils.all_diffs(eve_embedding, eve_embedding)
-    all_dist = utils.cdist(all_diff, metric=metric)
-
-    idx_dict = {}
-    for i, l in enumerate(lab):
-        l = int(l)
-        if l not in idx_dict:
-            idx_dict[l] = [i]
-        else:
-            idx_dict[l].append(i)
-    for key in idx_dict:
-        random.shuffle(idx_dict[key])
-
-    # create iterators for each anchor-positive pair
-    foreground_keys = [key for key in idx_dict.keys() if not key == 0]
-    foreground_dict = {}
-    for key in foreground_keys:
-        foreground_dict[key] = itertools.permutations(idx_dict[key], 2)
-
-    triplet_input_idx = []
-    all_neg_count = []    # for monitoring active count
-    while (len(triplet_input_idx)) < triplet_per_batch * 3:
-        keys = list(foreground_dict.keys())
-        if len(keys) == 0:
-            break
-
-        for key in keys:
-            try:
-                an_idx, pos_idx = foreground_dict[key].__next__()
-            except:
-                # remove the key to prevent infinite loop
-                del foreground_dict[key]
-                continue
-            
-            pos_dist = all_dist[an_idx, pos_idx]
-            neg_dist = np.copy(all_dist[an_idx])    # important to make a copy, otherwise is reference
-            neg_dist[idx_dict[key]] = np.NaN
-
-            all_neg = np.where(np.logical_and(neg_dist-pos_dist < alpha,
-                                            pos_dist < neg_dist))[0]
-            all_neg_count.append(len(all_neg))
-
-            # continue if no proper negtive sample 
-            if len(all_neg) > 0:
-                for i in range(num_negative):
-                    neg_idx = all_neg[np.random.randint(len(all_neg))]
-
-                    triplet_input_idx.extend([an_idx, pos_idx, neg_idx])
-
-    if len(triplet_input_idx) > 0:
-        return triplet_input_idx, np.mean(all_neg_count)
-    else:
-        return None, None
-
 def main():
 
     cfg = TrainConfig().parse()
@@ -107,6 +37,7 @@ def main():
     train_session = cfg.train_session
     train_set = prepare_multimodal_dataset(cfg.feature_root, train_session, cfg.feat, cfg.label_root)
     batch_per_epoch = len(train_set)//cfg.sess_per_batch
+    labeled_session = train_session[:cfg.label_num]
 
     val_session = cfg.val_session
     val_set = prepare_multimodal_dataset(cfg.feature_root, val_session, cfg.feat, cfg.label_root)
@@ -119,23 +50,51 @@ def main():
         lr_ph = tf.placeholder(tf.float32, name='learning_rate')
 
 
-        # load backbone model
-        if cfg.network == "convtsn":
-            model_emb = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
-        elif cfg.network == "convrtsn":
-            model_emb = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
-        else:
-            raise NotImplementedError
+        ####################### Load models here ########################
+        sensors_emb_dim = 32
 
-        input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
-        output_ph = tf.placeholder(tf.float32, shape=(None,)+cfg.feat_dim[cfg.feat[1]])
-        dropout_ph = tf.placeholder(tf.float32, shape=[])
-        model_emb.forward(input_ph, dropout_ph)
-        hidden = model_emb.hidden
+        with tf.variable_scope("modality_core"):
+            # load backbone model
+            if cfg.network == "convtsn":
+                model_emb = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+            elif cfg.network == "convrtsn":
+                model_emb = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+            elif cfg.network == "convbirtsn":
+                model_emb = networks.ConvBiRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+            else:
+                raise NotImplementedError
+
+            input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
+            dropout_ph = tf.placeholder(tf.float32, shape=[])
+            model_emb.forward(input_ph, dropout_ph)    # for lstm has variable scope
+            
+            model_output_sensors = networks.OutputLayer(n_input=cfg.emb_dim, n_output=sensors_emb_dim)
+
+        lambda_mul_ph = tf.placeholder(tf.float32, shape=[])
+        with tf.variable_scope("modality_sensors"):
+            model_emb_sensors = networks.RTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim)
+            model_pairsim_sensors = networks.PairSim(n_input=sensors_emb_dim)
+
+            input_sensors_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, 8])
+            model_emb_sensors.forward(input_sensors_ph, dropout_ph)
+
+            var_list = {}
+            for v in tf.global_variables():
+                if v.op.name.startswith("modality_sensors"):
+                    var_list[v.op.name.replace("modality_sensors/","")] = v
+            restore_saver_sensors = tf.train.Saver(var_list)
+
+        ############################# Forward Pass #############################
+
+
         if cfg.normalized:
             embedding = tf.nn.l2_normalize(model_emb.hidden, axis=-1, epsilon=1e-10)
+            embedding_sensors = tf.nn.l2_normalize(model_emb_sensors.hidden, axis=-1, epsilon=1e-10)
         else:
             embedding = model_emb.hidden
+            embedding_sensors = model_emb_sensors.hidden
+        # get the number of unsupervised training
+        unsup_num = tf.shape(input_sensors_ph)[0]
 
         # variable for visualizing the embeddings
         emb_var = tf.Variable([0.0], name='embeddings')
@@ -147,17 +106,18 @@ def main():
         tf.summary.histogram('embedding_dists', all_dist)
 
         # split embedding into anchor, positive and negative and calculate triplet loss
-        anchor, positive, negative = tf.unstack(tf.reshape(embedding, [-1,3,cfg.emb_dim]), 3, 1)
+        anchor, positive, negative = tf.unstack(tf.reshape(embedding[:-unsup_num], [-1,3,cfg.emb_dim]), 3, 1)
         metric_loss = networks.triplet_loss(anchor, positive, negative, cfg.alpha)
 
-        model_output = networks.OutputLayer(n_input=cfg.emb_dim, n_output=cfg.feat_dim[cfg.feat[1]][0])
-        model_output.forward(tf.nn.relu(hidden), dropout_ph)
+        model_output.forward(tf.nn.relu(embedding[-unsup_num:]), dropout_ph)
         logits = model_output.logits
 
         # MSE loss
-        MSE_loss = tf.losses.mean_squared_error(output_ph, logits)
+        MSE_loss = tf.losses.mean_squared_error(embedding_sensors, logits)
         regularization_loss = tf.reduce_sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
-        total_loss = metric_loss + MSE_loss * cfg.lambda_ver + regularization_loss * cfg.lambda_l2
+        total_loss = tf.cond(tf.equal(unsup_num, tf.shape(embedding)[0]), 
+                lambda: metric_loss + MSE_loss * lambda_mul_ph + regularization_loss * cfg.lambda_l2,
+                lambda: MSE_loss * lambda_mul_ph + regularization_loss * cfg.lambda_l2)
 
         tf.summary.scalar('learning_rate', lr_ph)
         train_op = utils.optimize(total_loss, global_step, cfg.optimizer,
@@ -259,41 +219,79 @@ def main():
                     try:
                         ##################### Data loading ########################
                         start_time = time.time()
-                        eve, eve2, lab = sess.run(next_train)
+                        eve, eve_sensors, lab, batch_sess = sess.run(next_train)
                         load_time = time.time() - start_time
     
                         ##################### Triplet selection #####################
                         start_time = time.time()
-                        # Get the embeddings of all events
-                        eve_embedding = np.zeros((eve.shape[0], cfg.emb_dim), dtype='float32')
-                        for start, end in zip(range(0, eve.shape[0], cfg.batch_size),
-                                            range(cfg.batch_size, eve.shape[0]+cfg.batch_size, cfg.batch_size)):
-                            end = min(end, eve.shape[0])
-                            emb = sess.run(embedding, feed_dict={input_ph: eve[start:end], dropout_ph: 1.0})
-                            eve_embedding[start:end] = emb
-    
-                        # Second, sample triplets within sampled sessions
-                        triplet_input_idx, negative_count = select_triplets_facenet(lab,eve_embedding,cfg.triplet_per_batch,cfg.alpha,metric=cfg.metric)
-    
-                        triplet_input = eve[triplet_input_idx]
-                        triplet_input2 = eve2[triplet_input_idx]
+                        # for labeled sessions, use facenet sampling
+                        eve_labeled = []
+                        lab_labeled = []
+                        for i in range(eve.shape[0]):
+                            if batch_sess[i,0] in labeled_session:
+                                eve_labeled.append(eve[i])
+                                lab_labeled.append(lab[i])
+
+                        if len(eve_labeled):    # if labeled sessions exist
+                            eve_labeled = np.concatenate(eve_labeled, axis=0)
+                            lab_labeled = np.concatenate(lab_labeled, axis=0)
+
+                            # Get the embeddings of all events
+                            eve_embedding = np.zeros((eve_labeled.shape[0], cfg.emb_dim), dtype='float32')
+                            for start, end in zip(range(0, eve_labeled.shape[0], cfg.batch_size),
+                                                range(cfg.batch_size, eve_labeled.shape[0]+cfg.batch_size, cfg.batch_size)):
+                                end = min(end, eve_labeled.shape[0])
+                                emb = sess.run(embedding, feed_dict={input_ph: eve_labeled[start:end], dropout_ph: 1.0})
+                                eve_embedding[start:end] = np.copy(emb)
+        
+                            # Second, sample triplets within sampled sessions
+                            all_diff = utils.all_diffs(eve_embedding, eve_embedding)
+                            triplet_input_idx, active_count = utils.select_triplets_facenet(lab_labeled,utils.cdist(all_diff,metric=cfg.metric),cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
+
+                            if triplet_input_idx is not None:
+                                triplet_input = eve_labeled[triplet_input_inx]
+
+                        else:
+                            active_count = -1
+
+                        # for all sessions
+                        perm_idx = np.random.permutation(eve.shape[0])
+                        perm_idx = perm_idx[:min(3*(perm_idx//3), 3*cfg.triplet_per_batch)]
+                        mul_input = eve[perm_idx]
+
+                        triplet_input = np.concatenate((triplet_input, mul_input), axis=0)
+                        sensors_input = eve_sensors[perm_idx]
     
                         ##################### Start training  ########################
     
-                        err,  metric_err, mse_err, _, step, summ = sess.run(
-                                [total_loss, metric_loss, MSE_loss, train_op, global_step, summary_op],
-                                feed_dict = {input_ph: triplet_input,
-                                             output_ph: triplet_input2,
-                                             dropout_ph: cfg.keep_prob,
-                                             lr_ph: learning_rate})
+                        # supervised initialization
+                        if epoch < cfg.multimodal_epochs:
+                            if not len(eve_labeled):    # if no labeled sessions exist
+                                continue
+                            err, mse_err, _, step, summ = sess.run(
+                                    [total_loss, MSE_loss, train_op, global_step, summary_op],
+                                    feed_dict = {input_ph: triplet_input,
+                                                 input_sensors_ph: sensors_input,
+                                                 dropout_ph: cfg.keep_prob,
+                                                 lambda_mul_ph: 0.0,
+                                                 lr_ph: learning_rate})
+                        else:
+                            err, mse_err, _, step, summ = sess.run(
+                                    [total_loss, MSE_loss, train_op, global_step, summary_op],
+                                    feed_dict = {input_ph: triplet_input,
+                                                 input_sensors_ph: sensors_input,
+                                                 dropout_ph: cfg.keep_prob,
+                                                 lambda_mul_ph: cfg.lambda_multimodal,
+                                                 lr_ph: learning_rate})
                         train_time = time.time() - start_time
     
                         print ("%s\tEpoch: [%d][%d/%d]\tEvent num: %d\tLoad time: %.3f\tTrain_time: %.3f\tLoss %.4f" % \
                                 (cfg.name, epoch+1, batch_count, batch_per_epoch, eve.shape[0], load_time, train_time, err))
     
                         summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err),
-                                    tf.Summary.Value(tag="metric_loss", simple_value=metric_err),
-                                    tf.Summary.Value(tag="mse_loss", simple_value=mse_err)])
+                                    tf.Summary.Value(tag="active_count", simple_value=active_count),
+                                    tf.Summary.Value(tag="triplet_num", simple_value=(triplet_input.shape[0]-sensors_input.shape[0])//3),
+                                    tf.Summary.Value(tag="MSE_loss", simple_value=mse_err)]
     
                         summary_writer.add_summary(summary, step)
                         summary_writer.add_summary(summ, step)
@@ -308,7 +306,7 @@ def main():
                 print ("Evaluating on validation set...")
                 val_err, val_embeddings, _ = sess.run([MSE_loss, embedding, set_emb],
                                                     feed_dict = {input_ph: val_feats,
-                                                                 output_ph: val_feats2,
+                                                                 input_sensors_ph: val_feats2,
                                                                  dropout_ph: 1.0})
                 mAP, mPrec = utils.evaluate_simple(val_embeddings, val_labels)
 
