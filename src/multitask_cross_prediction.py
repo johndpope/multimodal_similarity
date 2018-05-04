@@ -73,7 +73,6 @@ def main():
         lambda_mul_ph = tf.placeholder(tf.float32, shape=[])
         with tf.variable_scope("modality_sensors"):
             model_emb_sensors = networks.RTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim)
-            model_pairsim_sensors = networks.PairSim(n_input=sensors_emb_dim)
 
             input_sensors_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, 8])
             model_emb_sensors.forward(input_sensors_ph, dropout_ph)
@@ -109,19 +108,21 @@ def main():
         anchor, positive, negative = tf.unstack(tf.reshape(embedding[:-unsup_num], [-1,3,cfg.emb_dim]), 3, 1)
         metric_loss = networks.triplet_loss(anchor, positive, negative, cfg.alpha)
 
-        model_output.forward(tf.nn.relu(embedding[-unsup_num:]), dropout_ph)
-        logits = model_output.logits
+        model_output_sensors.forward(tf.nn.relu(embedding[-unsup_num:]), dropout_ph)
+        logits = model_output_sensors.logits
 
         # MSE loss
         MSE_loss = tf.losses.mean_squared_error(embedding_sensors, logits)
         regularization_loss = tf.reduce_sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
         total_loss = tf.cond(tf.equal(unsup_num, tf.shape(embedding)[0]), 
-                lambda: metric_loss + MSE_loss * lambda_mul_ph + regularization_loss * cfg.lambda_l2,
-                lambda: MSE_loss * lambda_mul_ph + regularization_loss * cfg.lambda_l2)
+                lambda: MSE_loss * lambda_mul_ph + regularization_loss * cfg.lambda_l2,
+                lambda: metric_loss + MSE_loss * lambda_mul_ph + regularization_loss * cfg.lambda_l2)
 
         tf.summary.scalar('learning_rate', lr_ph)
+        # only train the core branch
+        train_var_list = [v for v in tf.global_variables() if v.op.name.startswith("modality_core")]
         train_op = utils.optimize(total_loss, global_step, cfg.optimizer,
-                lr_ph, tf.global_variables())
+                lr_ph, train_var_list)
 
         saver = tf.train.Saver(max_to_keep=10)
 
@@ -133,7 +134,7 @@ def main():
         feat_paths_ph = tf.placeholder(tf.string, shape=[None, cfg.sess_per_batch])
         feat2_paths_ph = tf.placeholder(tf.string, shape=[None, cfg.sess_per_batch])
         label_paths_ph = tf.placeholder(tf.string, shape=[None, cfg.sess_per_batch])
-        train_data = multimodal_session_generator(feat_paths_ph, feat2_paths_ph, label_paths_ph, sess_per_batch=cfg.sess_per_batch, num_threads=2, shuffled=False, preprocess_func=[model_emb.prepare_input, utils.mean_pool_input])
+        train_data = multimodal_session_generator(feat_paths_ph, feat2_paths_ph, label_paths_ph, sess_per_batch=cfg.sess_per_batch, num_threads=2, shuffled=False, preprocess_func=[model_emb.prepare_input, model_emb_sensors.prepare_input])
         train_sess_iterator = train_data.make_initializable_iterator()
         next_train = train_sess_iterator.get_next()
 
@@ -151,7 +152,7 @@ def main():
             val_sess.extend([session_id]*eve_batch.shape[0])
             val_boundaries.extend(boundary)
 
-            eve2_batch, _,_ = load_data_and_label(session[1], session[-1], utils.mean_pool_input)
+            eve2_batch, _,_ = load_data_and_label(session[1], session[-1], model_emb_sensors.prepare_input_test)
             val_feats2.append(eve2_batch)
         val_feats = np.concatenate(val_feats, axis=0)
         val_feats2 = np.concatenate(val_feats2, axis=0)
@@ -186,6 +187,8 @@ def main():
                 print ("Restoring pretrained model: %s" % cfg.model_path)
                 saver.restore(sess, cfg.model_path)
 
+            #print ("Restoring sensors model: %s" % cfg.sensors_path)
+            restore_saver_sensors.restore(sess, cfg.sensors_path)
 
             ################## Training loop ##################
             epoch = -1
@@ -228,13 +231,14 @@ def main():
                         eve_labeled = []
                         lab_labeled = []
                         for i in range(eve.shape[0]):
-                            if batch_sess[i,0] in labeled_session:
+                            # FIXME: use decode again to get session_id str
+                            if batch_sess[i,0].decode() in labeled_session:
                                 eve_labeled.append(eve[i])
                                 lab_labeled.append(lab[i])
 
                         if len(eve_labeled):    # if labeled sessions exist
-                            eve_labeled = np.concatenate(eve_labeled, axis=0)
-                            lab_labeled = np.concatenate(lab_labeled, axis=0)
+                            eve_labeled = np.stack(eve_labeled, axis=0)
+                            lab_labeled = np.stack(lab_labeled, axis=0)
 
                             # Get the embeddings of all events
                             eve_embedding = np.zeros((eve_labeled.shape[0], cfg.emb_dim), dtype='float32')
@@ -249,17 +253,20 @@ def main():
                             triplet_input_idx, active_count = utils.select_triplets_facenet(lab_labeled,utils.cdist(all_diff,metric=cfg.metric),cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
 
                             if triplet_input_idx is not None:
-                                triplet_input = eve_labeled[triplet_input_inx]
+                                triplet_input = eve_labeled[triplet_input_idx]
 
                         else:
                             active_count = -1
 
                         # for all sessions
                         perm_idx = np.random.permutation(eve.shape[0])
-                        perm_idx = perm_idx[:min(3*(perm_idx//3), 3*cfg.triplet_per_batch)]
+                        perm_idx = perm_idx[:min(3*(len(perm_idx)//3), 3*cfg.triplet_per_batch)]
                         mul_input = eve[perm_idx]
 
-                        triplet_input = np.concatenate((triplet_input, mul_input), axis=0)
+                        if len(eve_labeled):
+                            triplet_input = np.concatenate((triplet_input, mul_input), axis=0)
+                        else:
+                            triplet_input = mul_input
                         sensors_input = eve_sensors[perm_idx]
     
                         ##################### Start training  ########################
@@ -291,7 +298,7 @@ def main():
                         summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err),
                                     tf.Summary.Value(tag="active_count", simple_value=active_count),
                                     tf.Summary.Value(tag="triplet_num", simple_value=(triplet_input.shape[0]-sensors_input.shape[0])//3),
-                                    tf.Summary.Value(tag="MSE_loss", simple_value=mse_err)]
+                                    tf.Summary.Value(tag="MSE_loss", simple_value=mse_err)])
     
                         summary_writer.add_summary(summary, step)
                         summary_writer.add_summary(summ, step)
