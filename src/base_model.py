@@ -169,20 +169,27 @@ def main():
         next_train = train_sess_iterator.get_next()
 
         # prepare validation data
+        val_sess = []
         val_feats = []
         val_labels = []
+        val_boundaries = []
         for session in val_set:
-            eve_batch, lab_batch, _ = load_data_and_label(session[0], session[1], model_emb.prepare_input_test)    # use prepare_input_test for testing time
+            session_id = os.path.basename(session[1]).split('_')[0]
+            eve_batch, lab_batch, boundary = load_data_and_label(session[0], session[-1], model_emb.prepare_input_test)    # use prepare_input_test for testing time
             val_feats.append(eve_batch)
             val_labels.append(lab_batch)
+            val_sess.extend([session_id]*eve_batch.shape[0])
+            val_boundaries.extend(boundary)
         val_feats = np.concatenate(val_feats, axis=0)
         val_labels = np.concatenate(val_labels, axis=0)
         print ("Shape of val_feats: ", val_feats.shape)
 
         # generate metadata.tsv for visualize embedding
         with open(os.path.join(result_dir, 'metadata_val.tsv'), 'w') as fout:
-            for v in val_labels:
-                fout.write('%d\n' % int(v))
+            fout.write('id\tlabel\tsession_id\tstart\tend\n')
+            for i in range(len(val_sess)):
+                fout.write('{0}\t{1}\t{2}\t{3}\t{4}\n'.format(i, val_labels[i,0], val_sess[i],
+                                            val_boundaries[i][0], val_boundaries[i][1]))
 
 
         # Start running the graph

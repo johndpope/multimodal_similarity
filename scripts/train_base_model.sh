@@ -18,9 +18,9 @@ batch_size=512
 num_negative=3
 metric="squaredeuclidean"
 
-label_num=6
-max_epochs=1500
-static_epochs=500
+label_num=9
+max_epochs=6000
+static_epochs=4000
 lr=1e-2
 keep_prob=0.5
 lambda_l2=0.
@@ -35,7 +35,7 @@ if [ "$loss" == "triplet" ]; then
 
     #pretrained_model="/mnt/work/honda_100h/results/lr_1e-3_20180326-015741/lr_1e-3.ckpt-27872"
 
-    name=base_model_labelnum${label_num}_epoch1500
+    name=base_model_labelnum${label_num}_epoch${max_epochs}
 
     #python base_model.py --name $name --pretrained_model $pretrained_model \
     python base_model.py --name $name \
