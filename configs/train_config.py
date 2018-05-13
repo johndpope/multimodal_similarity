@@ -13,6 +13,8 @@ class TrainConfig(BaseConfig):
                 help='absolute path of pretrained model')
         self.parser.add_argument('--sensors_path', type=str, default=None,
                 help='absolute path of pretrained sensors model')
+        self.parser.add_argument('--segment_path', type=str, default=None,
+                help='absolute path of pretrained segment model')
         self.parser.add_argument('--feat', type=str, default='resnet',
                 help='feature used: resnet | sensors')
         self.parser.add_argument('--network', type=str, default='tsn',
@@ -34,6 +36,8 @@ class TrainConfig(BaseConfig):
 
         self.parser.add_argument('--label_num', type=int, default=93,
                        help='number of sessions with labels used for training')
+        self.parser.add_argument('--task', type=str, default="supervised",
+                help='training task: supervised | semi-supervised | zero-shot')
 
         self.parser.add_argument('--num_threads', type=int, default=2,
                        help='number of threads for loading data in parallel')
@@ -89,4 +93,8 @@ class TrainConfig(BaseConfig):
 
         self.parser.add_argument('--gpu', type=str, default=0,
                 help='Set CUDA_VISIBLE_DEVICES')
+        self.parser.add_argument('--label_type', type=str, default='goal',
+                help='label_type: goal | stimuli')
 
+        self.parser.add_argument('--loss', type=str, default='triplet',
+                help='loss used: triplet | lifted | cluster | npairs')

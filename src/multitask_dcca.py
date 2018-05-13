@@ -1,5 +1,5 @@
 """
-Reference: Learning with Side Information through Modality Hallucination
+Reference: On deep multi-view representation learning
 """
 
 from datetime import datetime
@@ -22,8 +22,6 @@ from data_io import multimodal_session_generator, load_data_and_label, prepare_m
 import networks
 import utils
 
-
-
 def main():
 
     cfg = TrainConfig().parse()
@@ -38,8 +36,10 @@ def main():
     # prepare dataset
     train_session = cfg.train_session
     train_set = prepare_multimodal_dataset(cfg.feature_root, train_session, cfg.feat, cfg.label_root)
-    train_set = train_set[:cfg.label_num]
+    if cfg.task == "supervised":    # fully supervised task
+        train_set = train_set[:cfg.label_num]
     batch_per_epoch = len(train_set)//cfg.sess_per_batch
+    labeled_session = train_session[:cfg.label_num]
 
     val_session = cfg.val_session
     val_set = prepare_multimodal_dataset(cfg.feature_root, val_session, cfg.feat, cfg.label_root)
@@ -51,8 +51,10 @@ def main():
         global_step = tf.Variable(0, trainable=False)
         lr_ph = tf.placeholder(tf.float32, name='learning_rate')
 
-        
+
         ####################### Load models here ########################
+        sensors_emb_dim = 32
+        segment_emb_dim = 32
 
         with tf.variable_scope("modality_core"):
             # load backbone model
@@ -60,6 +62,8 @@ def main():
                 model_emb = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
             elif cfg.network == "convrtsn":
                 model_emb = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+            elif cfg.network == "convbirtsn":
+                model_emb = networks.ConvBiRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
             else:
                 raise NotImplementedError
 
@@ -67,8 +71,9 @@ def main():
             dropout_ph = tf.placeholder(tf.float32, shape=[])
             model_emb.forward(input_ph, dropout_ph)    # for lstm has variable scope
 
+
+        lambda_mul_ph = tf.placeholder(tf.float32, shape=[])
         with tf.variable_scope("modality_sensors"):
-            sensors_emb_dim = 32
             model_emb_sensors = networks.RTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim)
 
             input_sensors_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, 8])
@@ -80,19 +85,8 @@ def main():
                     var_list[v.op.name.replace("modality_sensors/","")] = v
             restore_saver_sensors = tf.train.Saver(var_list)
 
-        with tf.variable_scope("hallucination_sensors"):
-            # load backbone model
-            if cfg.network == "convtsn":
-                hal_emb_sensors = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim)
-            elif cfg.network == "convrtsn":
-                hal_emb_sensors = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim)
-            else:
-                raise NotImplementedError
-
-            hal_emb_sensors.forward(input_ph, dropout_ph)    # for lstm has variable scope
 
         with tf.variable_scope("modality_segment"):
-            segment_emb_dim = 32
             model_emb_segment = networks.RTSN(n_seg=cfg.num_seg, emb_dim=segment_emb_dim, n_input=357)
 
             input_segment_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, 357])
@@ -104,36 +98,24 @@ def main():
                     var_list[v.op.name.replace("modality_segment/","")] = v
             restore_saver_segment = tf.train.Saver(var_list)
 
-        with tf.variable_scope("hallucination_segment"):
-            # load backbone model
-            if cfg.network == "convtsn":
-                hal_emb_segment = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=segment_emb_dim)
-            elif cfg.network == "convrtsn":
-                hal_emb_segment = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=segment_emb_dim)
-            else:
-                raise NotImplementedError
-
-            hal_emb_segment.forward(input_ph, dropout_ph)    # for lstm has variable scope
 
         ############################# Forward Pass #############################
 
 
-        # Core branch
         if cfg.normalized:
             embedding = tf.nn.l2_normalize(model_emb.hidden, axis=-1, epsilon=1e-10)
             embedding_sensors = tf.nn.l2_normalize(model_emb_sensors.hidden, axis=-1, epsilon=1e-10)
-            embedding_hal_sensors = tf.nn.l2_normalize(hal_emb_sensors.hidden, axis=-1, epsilon=1e-10)
             embedding_segment = tf.nn.l2_normalize(model_emb_segment.hidden, axis=-1, epsilon=1e-10)
-            embedding_hal_segment = tf.nn.l2_normalize(hal_emb_segment.hidden, axis=-1, epsilon=1e-10)
         else:
             embedding = model_emb.hidden
             embedding_sensors = model_emb_sensors.hidden
-            embedding_hal_sensors = hal_emb_sensors.hidden
             embedding_segment = model_emb_segment.hidden
-            embedding_hal_segment = hal_emb_segment.hidden
+
+        # get the number of unsupervised training
+        unsup_num = tf.shape(input_sensors_ph)[0]
 
         # variable for visualizing the embeddings
-        emb_var = tf.Variable([0.0], name='embeddings')
+        emb_var = tf.Variable(tf.zeros([1116,cfg.emb_dim],dtype=tf.float32), name='embeddings')
         set_emb = tf.assign(emb_var, embedding, validate_shape=False)
 
         # calculated for monitoring all-pair embedding distance
@@ -142,42 +124,28 @@ def main():
         tf.summary.histogram('embedding_dists', all_dist)
 
         # split embedding into anchor, positive and negative and calculate triplet loss
-        anchor, positive, negative = tf.unstack(tf.reshape(embedding, [-1,3,cfg.emb_dim]), 3, 1)
-        anc_sensors, pos_sensors, neg_sensors = tf.unstack(tf.reshape(embedding_sensors, [-1,3,sensors_emb_dim]), 3, 1)
-        anc_hal_sensors, pos_hal_sensors, neg_hal_sensors = tf.unstack(tf.reshape(embedding_hal_sensors, [-1,3,sensors_emb_dim]), 3, 1)
-        anc_segment, pos_segment, neg_segment = tf.unstack(tf.reshape(embedding_segment, [-1,3,segment_emb_dim]), 3, 1)
-        anc_hal_segment, pos_hal_segment, neg_hal_segment = tf.unstack(tf.reshape(embedding_hal_segment, [-1,3,segment_emb_dim]), 3, 1)
+        anchor, positive, negative = tf.unstack(tf.reshape(embedding[:-unsup_num], [-1,3,cfg.emb_dim]), 3, 1)
+        metric_loss = networks.triplet_loss(anchor, positive, negative, cfg.alpha)
 
-        # a fusion embedding
-        anc_fused = tf.concat((anchor, anc_hal_sensors, anc_hal_segment), axis=1)
-        pos_fused = tf.concat((positive, pos_hal_sensors, anc_hal_segment), axis=1)
-        neg_fused = tf.concat((negative, neg_hal_sensors, anc_hal_segment), axis=1)
-
-        ############################# Calculate loss #############################
-
-        # triplet loss
-        metric_loss = networks.triplet_loss(anchor, positive, negative, cfg.alpha) + \
-                      networks.triplet_loss(anc_sensors, pos_sensors, neg_sensors, cfg.alpha) + \
-                      networks.triplet_loss(anc_hal_sensors, pos_hal_sensors, neg_hal_sensors, cfg.alpha) + \
-                      networks.triplet_loss(anc_segment, pos_segment, neg_segment, cfg.alpha) + \
-                      networks.triplet_loss(anc_hal_segment, pos_hal_segment, neg_hal_segment, cfg.alpha) + \
-                      networks.triplet_loss(anc_fused, pos_fused, neg_fused, cfg.alpha)
-
-        # hallucination loss (regression loss)
-        hal_loss_sensors = tf.nn.l2_loss(embedding_sensors - embedding_hal_sensors)
-        hal_loss_segment = tf.nn.l2_loss(embedding_segment - embedding_hal_segment)
-        hal_loss = hal_loss_sensors + hal_loss_segment
+        # DCCA loss
+        CCA_loss_sensors = networks.dcca_loss(embedding[-unsup_num:], embedding_sensors)
+        CCA_loss_segment = networks.dcca_loss(embedding[-unsup_num:], embedding_segment)
+        CCA_loss = CCA_loss_sensors + CCA_loss_segment
 
         regularization_loss = tf.reduce_sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
-        # use lambda_multimodal for hal_loss
-        total_loss = metric_loss + cfg.lambda_multimodal * hal_loss + regularization_loss * cfg.lambda_l2
+        total_loss = tf.cond(tf.equal(unsup_num, tf.shape(embedding)[0]), 
+                lambda: CCA_loss * lambda_mul_ph + regularization_loss * cfg.lambda_l2,
+                lambda: metric_loss + CCA_loss * lambda_mul_ph + regularization_loss * cfg.lambda_l2)
 
         tf.summary.scalar('learning_rate', lr_ph)
+        # only train the core branch
+        train_var_list = [v for v in tf.global_variables() if v.op.name.startswith("modality_core")]
         train_op = utils.optimize(total_loss, global_step, cfg.optimizer,
-                                           lr_ph, tf.global_variables())
+                lr_ph, train_var_list)
 
         saver = tf.train.Saver(max_to_keep=10)
-        summary_op = tf.summary.merge_all()    # not logging histogram of variables because it will cause problem when only unimodal_train_op is called
+
+        summary_op = tf.summary.merge_all()
 
         #########################################################################
 
@@ -238,17 +206,16 @@ def main():
         with sess.as_default():
 
             sess.run(tf.global_variables_initializer())
-
             print ("Restoring sensors model: %s" % cfg.sensors_path)
             restore_saver_sensors.restore(sess, cfg.sensors_path)
             print ("Restoring segment model: %s" % cfg.segment_path)
             restore_saver_segment.restore(sess, cfg.segment_path)
 
+
             # load pretrain model, if needed
             if cfg.model_path:
                 print ("Restoring pretrained model: %s" % cfg.model_path)
                 saver.restore(sess, cfg.model_path)
-
 
             ################## Training loop ##################
             epoch = -1
@@ -297,46 +264,82 @@ def main():
     
                         ##################### Triplet selection #####################
                         start_time = time.time()
-                        # Get the embeddings of all events
-                        eve_embedding = np.zeros((eve.shape[0], cfg.emb_dim), dtype='float32')
-                        for start, end in zip(range(0, eve.shape[0], cfg.batch_size),
-                                            range(cfg.batch_size, eve.shape[0]+cfg.batch_size, cfg.batch_size)):
-                            end = min(end, eve.shape[0])
-                            emb = sess.run(embedding, feed_dict={input_ph: eve[start:end], dropout_ph: 1.0})
-                            eve_embedding[start:end] = np.copy(emb)
-    
-                        # sample triplets within sampled sessions
-                        all_diff = utils.all_diffs(eve_embedding, eve_embedding)
-                        triplet_input_idx, active_count = utils.select_triplets_facenet(lab,utils.cdist(all_diff,metric=cfg.metric),cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
-                        if triplet_input_idx is None:
-                            continue
-                        
-                        triplet_input = eve[triplet_input_idx]
-                        sensors_input = eve_sensors[triplet_input_idx]
-                        segment_input = eve_segment[triplet_input_idx]
+                        # for labeled sessions, use facenet sampling
+                        eve_labeled = []
+                        lab_labeled = []
+                        for i in range(eve.shape[0]):
+                            # FIXME: use decode again to get session_id str
+                            if batch_sess[i,0].decode() in labeled_session:
+                                eve_labeled.append(eve[i])
+                                lab_labeled.append(lab[i])
 
-                        select_time = time.time() - start_time
+                        if len(eve_labeled):    # if labeled sessions exist
+                            eve_labeled = np.stack(eve_labeled, axis=0)
+                            lab_labeled = np.stack(lab_labeled, axis=0)
 
-                        if len(triplet_input.shape) > 5:    # debugging
-                            pdb.set_trace()
+                            # Get the embeddings of all events
+                            eve_embedding = np.zeros((eve_labeled.shape[0], cfg.emb_dim), dtype='float32')
+                            for start, end in zip(range(0, eve_labeled.shape[0], cfg.batch_size),
+                                                range(cfg.batch_size, eve_labeled.shape[0]+cfg.batch_size, cfg.batch_size)):
+                                end = min(end, eve_labeled.shape[0])
+                                emb = sess.run(embedding, feed_dict={input_ph: eve_labeled[start:end], dropout_ph: 1.0})
+                                eve_embedding[start:end] = np.copy(emb)
+        
+                            # Second, sample triplets within sampled sessions
+                            all_diff = utils.all_diffs(eve_embedding, eve_embedding)
+                            triplet_input_idx, active_count = utils.select_triplets_facenet(lab_labeled,utils.cdist(all_diff,metric=cfg.metric),cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
+
+                            if triplet_input_idx is not None:
+                                triplet_input = eve_labeled[triplet_input_idx]
+
+                        else:
+                            active_count = -1
+
+                        # for all sessions in the batch
+                        perm_idx = np.random.permutation(eve.shape[0])
+                        perm_idx = perm_idx[:min(3*(len(perm_idx)//3), 3*cfg.triplet_per_batch)]
+                        mul_input = eve[perm_idx]
+
+                        if len(eve_labeled) and triplet_input_idx is not None:
+                            triplet_input = np.concatenate((triplet_input, mul_input), axis=0)
+                        else:
+                            triplet_input = mul_input
+                        sensors_input = eve_sensors[perm_idx]
+                        segment_input = eve_segment[perm_idx]
     
                         ##################### Start training  ########################
     
-                        err, metric_err, hal_err, _, step, summ = sess.run(
-                                [total_loss, metric_loss, hal_loss, train_op, global_step, summary_op],
-                                feed_dict = {input_ph: triplet_input,
-                                             input_sensors_ph: sensors_input,
-                                             input_segment_ph: segment_input,
-                                             dropout_ph: cfg.keep_prob,
-                                             lr_ph: learning_rate})
+                        # supervised initialization
+                        if epoch < cfg.multimodal_epochs:
+                            if not len(eve_labeled):    # if no labeled sessions exist
+                                continue
+                            err, mse_err, _, step, summ = sess.run(
+                                    [total_loss, MSE_loss, train_op, global_step, summary_op],
+                                    feed_dict = {input_ph: triplet_input,
+                                                 input_sensors_ph: sensors_input,
+                                                 dropout_ph: cfg.keep_prob,
+                                                 lambda_mul_ph: 0.0,
+                                                 lr_ph: learning_rate})
+                        else:
+                            print (triplet_input.shape)
+                            err, cca_err1, cca_err2, _, step, summ = sess.run(
+                                    [total_loss, CCA_loss_sensors, CCA_loss_segment, train_op, global_step, summary_op],
+                                    feed_dict = {input_ph: triplet_input,
+                                                 input_sensors_ph: sensors_input,
+                                                 input_segment_ph: segment_input,
+                                                 dropout_ph: cfg.keep_prob,
+                                                 lambda_mul_ph: cfg.lambda_multimodal,
+                                                 lr_ph: learning_rate})
+                        train_time = time.time() - start_time
     
-                        print ("%s\tEpoch: [%d][%d/%d]\tEvent num: %d\tTriplet num: %d\tLoad time: %.3f\tSelect time: %.3f\tMetric Loss %.4f\tHal Loss %.4f" % \
-                                (cfg.name, epoch+1, batch_count, batch_per_epoch, eve.shape[0], triplet_input.shape[0]//3, load_time, select_time, metric_err, hal_err))
+                        print ("%s\tEpoch: [%d][%d/%d]\tEvent num: %d\tLoad time: %.3f\tTrain_time: %.3f\tLoss %.4f" % \
+                                (cfg.name, epoch+1, batch_count, batch_per_epoch, eve.shape[0], load_time, train_time, err))
     
                         summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err),
                                     tf.Summary.Value(tag="active_count", simple_value=active_count),
-                                    tf.Summary.Value(tag="metric_loss", simple_value=metric_err),
-                                    tf.Summary.Value(tag="hallucination_loss", simple_value=hal_err)])
+                                    tf.Summary.Value(tag="triplet_num", simple_value=(triplet_input.shape[0]-sensors_input.shape[0])//3),
+                                    tf.Summary.Value(tag="CCA_loss_sensors", simple_value=cca_err1),
+                                    tf.Summary.Value(tag="CCA_loss_segment", simple_value=cca_err2)])
     
                         summary_writer.add_summary(summary, step)
                         summary_writer.add_summary(summ, step)
@@ -349,16 +352,17 @@ def main():
 
                 # validation on val_set
                 print ("Evaluating on validation set...")
-                val_embeddings, hal_err, _ = sess.run([embedding, hal_loss, set_emb],
-                                                feed_dict = {input_ph: val_feats,
-                                                             input_sensors_ph: val_feats2,
-                                                             input_segment_ph: val_feats3,
-                                                             dropout_ph: 1.0})
+                val_err1, val_err2, val_embeddings, _ = sess.run([CCA_loss_sensors, CCA_loss_segment, embedding, set_emb],
+                                                    feed_dict = {input_ph: val_feats,
+                                                                 input_sensors_ph: val_feats2,
+                                                                 input_segment_ph: val_feats3,
+                                                                 dropout_ph: 1.0})
                 mAP, mPrec = utils.evaluate_simple(val_embeddings, val_labels)
 
                 summary = tf.Summary(value=[tf.Summary.Value(tag="Valiation mAP", simple_value=mAP),
                                             tf.Summary.Value(tag="Validation mPrec@0.5", simple_value=mPrec),
-                                            tf.Summary.Value(tag="Validation hal loss", simple_value=hal_err)])
+                                            tf.Summary.Value(tag="Validation cca loss sensors", simple_value=val_err1),
+                                            tf.Summary.Value(tag="Validation cca loss segment", simple_value=val_err2)])
                 summary_writer.add_summary(summary, step)
                 print ("Epoch: [%d]\tmAP: %.4f\tmPrec: %.4f" % (epoch+1,mAP,mPrec))
 

@@ -26,3 +26,15 @@ honda_num2labels = {0: 'Background',
                     5: 'Right lane change',
                     6: 'U-turn'
                     }
+
+stimuli_num2labels = {0: 'Background',
+                      1: 'Stop 4 sign',
+                      2: 'Stop 4 light',
+                      3: 'Stop 4 congestion',
+                      4: 'Stop 4 others',
+                      5: 'Stop 4 pedestrian',
+                      6: 'Avoid TP',
+                      7: 'Avoid parked car',
+                      8: 'Avoid pedesrian near ego lane',
+                      9: 'Avoid on-road bicyclist',
+                      }

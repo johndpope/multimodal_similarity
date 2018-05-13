@@ -9,7 +9,7 @@ import sys
 sys.path.append('../')
 from preprocess.label_transfer import label_transfer, MIN_LENGTH, MAX_LENGTH, MIN_LENGTH_BACKGROUND
 
-def prepare_dataset(data_dir, sessions, feat, label_dir=None):
+def prepare_dataset(data_dir, sessions, feat, label_dir=None, label_type='goal'):
 
     if feat == 'resnet':
         appendix = '.npy'
@@ -18,20 +18,25 @@ def prepare_dataset(data_dir, sessions, feat, label_dir=None):
     elif feat == 'sensors_sae':
         appendix = '_sensors_normalized_sae.npy'
     elif feat == 'segment':
-        appendix = '_seg_output.npy'
+        appendix = '_seg_sp.npy'
+    elif feat == 'segment_down':
+        appendix = '_seg_down.npy'
     else:
         raise NotImplementedError
 
     dataset = []
     for sess in sessions:
         feat_path = os.path.join(data_dir, sess+appendix)
-        label_path = os.path.join(label_dir, sess+'_goal.pkl')
+        if label_type == 'goal':
+            label_path = os.path.join(label_dir, sess+'_goal.pkl')
+        elif label_type == 'stimuli':
+            label_path = os.path.join(label_dir, sess+'_stimuli.pkl')
 
         dataset.append((feat_path, label_path))
 
     return dataset
 
-def prepare_multimodal_dataset(data_dir, sessions, feat_list, label_dir=None):
+def prepare_multimodal_dataset(data_dir, sessions, feat_list, label_dir=None, label_type='goal'):
     """
     feat_list -- a list of multimodal feature used
     """
@@ -47,18 +52,25 @@ def prepare_multimodal_dataset(data_dir, sessions, feat_list, label_dir=None):
             elif feat == 'sensors_sae':
                 appendix = '_sensors_normalized_sae.npy'
             elif feat == 'segment':
-                appendix = '_seg_output.npy'
+                appendix = '_seg_sp.npy'
+            elif feat == 'segment_down':
+                appendix = '_seg_down.npy'
             else:
                 raise NotImplementedError
 
             temp.append(os.path.join(data_dir, sess+appendix))
-        temp.append(os.path.join(label_dir, sess+'_goal.pkl'))
+
+        if label_type == 'goal':
+            label_path = os.path.join(label_dir, sess+'_goal.pkl')
+        elif label_type == 'stimuli':
+            label_path = os.path.join(label_dir, sess+'_stimuli.pkl')
+        temp.append(label_path)
 
         dataset.append(temp)
 
     return dataset
 
-def load_data_and_label(feat_path, label_path, preprocess_func=None):
+def load_data_and_label(feat_path, label_path, preprocess_func=None, transfer=True):
     """
     Load one session (data + label)
     """
@@ -76,13 +88,16 @@ def load_data_and_label(feat_path, label_path, preprocess_func=None):
     for i in range(len(label['G'])):
         length = label['s'][i+1] - label['s'][i]
         if length > MIN_LENGTH:    # ignore short (background) clips
-            if label_transfer[label['G'][i]] == 0 and length < MIN_LENGTH_BACKGROUND:
+            if label['G'][i] == 0 and length < MIN_LENGTH_BACKGROUND:
                 continue
 
             length = min(length, MAX_LENGTH)
             events.append(preprocess_func(feats[label['s'][i] : label['s'][i]+length]))
             # label transfer
-            labels.append(label_transfer[label['G'][i]])
+            if transfer:
+                labels.append(label_transfer[label['G'][i]])
+            else:
+                labels.append(label['G'][i])
             boundary.append((label['s'][i], label['s'][i]+length))
 
     events = np.concatenate(events, axis=0).astype('float32')
@@ -195,30 +210,33 @@ def session_generator(feat_paths, label_paths, sess_per_batch, num_threads=2, sh
     
     return dataset
 
-def multimodal_session_generator(feat_paths, feat2_paths, label_paths, sess_per_batch, num_threads=2, shuffled=True, preprocess_func=None):
+def multimodal_session_generator(feat_paths, feat2_paths, feat3_paths, label_paths, sess_per_batch, num_threads=2, shuffled=True, preprocess_func=None):
 
-    dataset = tf.data.Dataset.from_tensor_slices((feat_paths, feat2_paths, label_paths))
+    dataset = tf.data.Dataset.from_tensor_slices((feat_paths, feat2_paths, feat3_paths, label_paths))
     
-    def _input_parser(feat_path, feat2_path, label_path):
+    def _input_parser(feat_path, feat2_path, feat3_path, label_path):
         events = []
         events2 = []
+        events3 = []
         labels = []
         sess = []
         for s in range(sess_per_batch):
             #### very important to have decode() for tf r1.6 ####
             eve_batch, lab_batch, bou_batch = load_data_and_label(feat_path[s].decode(), label_path[s].decode(), preprocess_func[0])
-
             events.append(eve_batch)
             labels.append(lab_batch)
 
             eve2_batch, _, _  = load_data_and_label(feat2_path[s].decode(), label_path[s].decode(), preprocess_func[1])
-
             events2.append(eve2_batch)
+
+            eve3_batch, _, _  = load_data_and_label(feat3_path[s].decode(), label_path[s].decode(), preprocess_func[1])
+            events3.append(eve3_batch)
 
             sess.extend([os.path.basename(feat_path[s].decode()).split('.')[0]] * eve_batch.shape[0])
 
         events = np.concatenate(events, axis=0)
         events2 = np.concatenate(events2, axis=0)
+        events3 = np.concatenate(events3, axis=0)
         labels = np.concatenate(labels, axis=0)
         sess = np.asarray(sess).reshape(-1,1)
 
@@ -226,15 +244,16 @@ def multimodal_session_generator(feat_paths, feat2_paths, label_paths, sess_per_
             idx = np.random.permutation(events.shape[0])
             events = events[idx]
             events2 = events2[idx]
+            events3 = events3[idx]
             labels = labels[idx]
             sess = sess[idx]
 
-        return events, events2, labels, sess
+        return events, events2, events3, labels, sess
 
     # fix doc issue according to https://github.com/tensorflow/tensorflow/issues/11786
-    dataset = dataset.map(lambda feat_path, feat2_path, label_path:
-                        tuple(tf.py_func(_input_parser, [feat_path, feat2_path, label_path],
-                            [tf.float32, tf.float32, tf.int32, tf.string])),
+    dataset = dataset.map(lambda feat_path, feat2_path, feat3_path, label_path:
+                        tuple(tf.py_func(_input_parser, [feat_path, feat2_path, feat3_path, label_path],
+                            [tf.float32, tf.float32, tf.float32, tf.int32, tf.string])),
                         num_parallel_calls = num_threads)
     dataset = dataset.prefetch(1)
     

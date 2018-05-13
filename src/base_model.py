@@ -119,16 +119,16 @@ def main():
         elif cfg.network == "convtsn":
             model_emb = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
         elif cfg.network == "convrtsn":
-            model_emb = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+            model_emb = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim, n_h=cfg.n_h, n_w=cfg.n_w, n_C=cfg.n_C, n_input=cfg.n_input)
         elif cfg.network == "convbirtsn":
             model_emb = networks.ConvBiRTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
         else:
             raise NotImplementedError
 
         # get the embedding
-        if cfg.feat == "sensors":
+        if cfg.feat == "sensors" or cfg.feat == "segment":
             input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None])
-        elif cfg.feat == "resnet":
+        elif cfg.feat == "resnet" or cfg.feat == "segment_down":
             input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
         dropout_ph = tf.placeholder(tf.float32, shape=[])
         model_emb.forward(input_ph, dropout_ph)
@@ -245,6 +245,12 @@ def main():
 
                         # First, sample sessions for a batch
                         eve, se, lab = sess.run(next_train)
+                        # for memory concern, 1000 events are used in maximum
+                        if eve.shape[0] > 1000:
+                            idx = np.random.permutation(eve.shape[0])[:1000]
+                            eve = eve[idx]
+                            se = se[idx]
+                            lab = lab[idx]
 
                         select_time1 = time.time() - start_time_select
 
@@ -299,9 +305,9 @@ def main():
                 # validation on val_set
                 print ("Evaluating on validation set...")
                 val_embeddings, _ = sess.run([embedding, set_emb], feed_dict={input_ph: val_feats, dropout_ph: 1.0})
-                mAP, mPrec = utils.evaluate_simple(val_embeddings, val_labels)
-
+                mAP, mPrec, recall = utils.evaluate_simple(val_embeddings, val_labels)
                 summary = tf.Summary(value=[tf.Summary.Value(tag="Valiation mAP", simple_value=mAP),
+                                            tf.Summary.Value(tag="Validation Recall@1", simple_value=recall),
                                             tf.Summary.Value(tag="Validation mPrec@0.5", simple_value=mPrec)])
                 summary_writer.add_summary(summary, step)
                 print ("Epoch: [%d]\tmAP: %.4f\tmPrec: %.4f" % (epoch+1,mAP,mPrec))

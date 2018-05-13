@@ -8,7 +8,7 @@ import pdb
 import pandas as pd
 
 
-label_dir = '/mnt/work/honda_100h/labels/'
+label_dir = '/mnt/work/honda_100h/labels_stimuli/'
 feature_dir = '/mnt/work/honda_100h/features/'
 
 label_dict = {}
@@ -106,8 +106,8 @@ u'\u539f\u56e0 Cause'
 """
 
 
-#layers = [u'\u88ab\u52d5\u7684\u99d5\u99db\u884c\u70ba Operation_Stimuli-driven',
-layers = u'\u4e3b\u52d5\u7684\u99d5\u99db\u884c\u70ba Operation_Goal-oriented'
+layers = u'\u88ab\u52d5\u7684\u99d5\u99db\u884c\u70ba Operation_Stimuli-driven'
+#layers = u'\u4e3b\u52d5\u7684\u99d5\u99db\u884c\u70ba Operation_Goal-oriented'
 
 label_dict['background'] = 0
 
@@ -130,7 +130,7 @@ for fin in feature_files:
 
     s, G = convert_seg(label)
 
-    pickle.dump({'label': label, 's':s, 'G':G}, open(label_dir+session_id+'_goal.pkl', 'wb'))
+    pickle.dump({'label': label, 's':s, 'G':G}, open(label_dir+session_id+'_stimuli.pkl', 'wb'))
 
 
 print ("Save label dictionary")

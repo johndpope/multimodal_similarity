@@ -10,17 +10,21 @@ loss="triplet"
 
 num_threads=2
 sess_per_batch=3
+n_h=18
+n_w=32
+n_C=8
+n_input=17
 emb_dim=128
-feat="resnet"
+feat="segment_down"
 network="convrtsn"
 num_seg=3
 batch_size=512
 num_negative=3
 metric="squaredeuclidean"
 
-label_num=9
-max_epochs=6000
-static_epochs=4000
+label_num=93
+max_epochs=1500
+static_epochs=1200
 lr=1e-2
 keep_prob=0.5
 lambda_l2=0.
@@ -35,10 +39,12 @@ if [ "$loss" == "triplet" ]; then
 
     #pretrained_model="/mnt/work/honda_100h/results/lr_1e-3_20180326-015741/lr_1e-3.ckpt-27872"
 
-    name=base_model_labelnum${label_num}_epoch${max_epochs}
+#    name=base_model_labelnum${label_num}_epoch${max_epochs}
+    name=base_model_segment_labelnum${label_num}_dropout0.5
 
     #python base_model.py --name $name --pretrained_model $pretrained_model \
     python base_model.py --name $name \
+        --n_h $n_h --n_w $n_w --n_C $n_C --n_input $n_input \
         --gpu $gpu --num_threads $num_threads --batch_size $batch_size \
         --triplet_per_batch $triplet_per_batch --max_epochs $max_epochs \
         --triplet_select $triplet_select --sess_per_batch $sess_per_batch \

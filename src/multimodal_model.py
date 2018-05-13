@@ -362,7 +362,16 @@ def main():
                     try:
                         ##################### Data loading ########################
                         start_time = time.time()
-                        eve, eve_sensors, lab = sess.run(next_train)
+                        eve, eve_sensors, eve_segment, lab, batch_sess = sess.run(next_train)
+
+                        # for memory concern, 1000 events are used in maximum
+                        if eve.shape[0] > 1000:
+                            idx = np.random.permutation(eve.shape[0])[:1000]
+                            eve = eve[idx]
+                            eve_sensors = eve_sensors[idx]
+                            eve_segment = eve_segment[idx]
+                            lab = lab[idx]
+                            batch_sess = batch_sess[idx]
                         load_time = time.time() - start_time
     
                         ##################### Triplet selection #####################
@@ -473,9 +482,9 @@ def main():
                 val_embeddings, _ = sess.run([embedding, set_emb],
                                                 feed_dict = {input_ph: val_feats,
                                                              dropout_ph: 1.0})
-                mAP, mPrec = utils.evaluate_simple(val_embeddings, val_labels)
-
+                mAP, mPrec, recall = utils.evaluate_simple(val_embeddings, val_labels)
                 summary = tf.Summary(value=[tf.Summary.Value(tag="Valiation mAP", simple_value=mAP),
+                                            tf.Summary.Value(tag="Validation Recall@1", simple_value=recall),
                                             tf.Summary.Value(tag="Validation mPrec@0.5", simple_value=mPrec)])
                 summary_writer.add_summary(summary, step)
                 print ("Epoch: [%d]\tmAP: %.4f\tmPrec: %.4f" % (epoch+1,mAP,mPrec))

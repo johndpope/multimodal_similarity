@@ -559,8 +559,8 @@ for i in range(3):
     result += pearsonr(U_c[:,i], V_c[:,i])[0]
 print ("Sklearn results: ", result)
 
-X1 = tf.placeholder(tf.float32, shape=[600,3])
-X2 = tf.placeholder(tf.float32, shape=[600,3])
+X1 = tf.placeholder(tf.float32, shape=[None,3])
+X2 = tf.placeholder(tf.float32, shape=[None,3])
 corr = dcca_loss(X1, X2, K=3, rcov1=1e-4, rcov2=1e-4)
 with tf.Session() as sess:
     correlation = sess.run(corr, feed_dict={X1: U, X2: V})

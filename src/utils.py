@@ -96,6 +96,7 @@ def evaluate_simple(embeddings, labels, normalize=False, standardize=False, alph
     aps = []
     lab = []
     precs = []
+    num_correct = []
     for i in range(N):
         if labels[i] > 0:    # only for foreground events
             _, sorted_idx, ap = retrieve_one(embeddings[i], np.delete(embeddings,i,0),
@@ -114,11 +115,14 @@ def evaluate_simple(embeddings, labels, normalize=False, standardize=False, alph
                 prec, _ = precision_at_recall(labels[sorted_idx], labels[i], alpha)
                 precs.append(prec)
 
+                # compute recall @ 1
+                num_correct.append(recall_at_K(labels[sorted_idx], labels[i], 1))
 
     mAP = np.mean(aps)
     mPrec = np.mean(precs)
+    recall = np.mean(num_correct)
 
-    return mAP, mPrec
+    return mAP, mPrec, recall
     
 def evaluate(embeddings, labels, normalize=False, standardize=False, alpha=0.5):
     """
@@ -148,7 +152,8 @@ def evaluate(embeddings, labels, normalize=False, standardize=False, alpha=0.5):
     lab = []
     precs = []
     confs = []
-    num_correct = [0, 0, 0]    # for K = 1, 10, 100
+#    num_correct = [0, 0, 0]    # for K = 1, 10, 100
+    num_correct = [0,0,0,0,0,0]
     for i in range(N):
         if labels[i] > 0:    # only for foreground events
             _, sorted_idx, ap = retrieve_one(embeddings[i], np.delete(embeddings,i,0),
@@ -170,8 +175,13 @@ def evaluate(embeddings, labels, normalize=False, standardize=False, alpha=0.5):
 
                 # compute recall @ K
                 num_correct[0] += recall_at_K(labels[sorted_idx], labels[i], 1)
-                num_correct[1] += recall_at_K(labels[sorted_idx], labels[i], 10)
-                num_correct[2] += recall_at_K(labels[sorted_idx], labels[i], 100)
+#                num_correct[1] += recall_at_K(labels[sorted_idx], labels[i], 10)
+#                num_correct[2] += recall_at_K(labels[sorted_idx], labels[i], 100)
+                num_correct[1] += recall_at_K(labels[sorted_idx], labels[i], 2)
+                num_correct[2] += recall_at_K(labels[sorted_idx], labels[i], 4)
+                num_correct[3] += recall_at_K(labels[sorted_idx], labels[i], 8)
+                num_correct[4] += recall_at_K(labels[sorted_idx], labels[i], 16)
+                num_correct[5] += recall_at_K(labels[sorted_idx], labels[i], 32)
 
     mAP = np.mean(aps)
     mPrec = np.mean(precs)
@@ -471,3 +481,15 @@ def select_triplets_facenet(lab, all_dist, triplet_per_batch, alpha=0.2, num_neg
         return triplet_input_idx, np.mean(all_neg_count)
     else:
         return None, None
+
+def metric_loss(name):
+    if name == 'triplet':
+        return metric_loss_ops.triplet_semihard_loss
+    elif name == 'lifted':
+        return metric_loss_ops.lifted_struct_loss
+    elif name == 'npairs':
+        return metric_loss_ops.npairs_loss
+    elif name == 'cluster':
+        return metric_loss_ops.cluster_loss
+    else:
+        return None

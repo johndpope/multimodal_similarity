@@ -1,5 +1,5 @@
 """
-Reference: Learning with Side Information through Modality Hallucination
+Reference: On multi-view representation learning
 """
 
 from datetime import datetime
@@ -80,16 +80,6 @@ def main():
                     var_list[v.op.name.replace("modality_sensors/","")] = v
             restore_saver_sensors = tf.train.Saver(var_list)
 
-        with tf.variable_scope("hallucination_sensors"):
-            # load backbone model
-            if cfg.network == "convtsn":
-                hal_emb_sensors = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim)
-            elif cfg.network == "convrtsn":
-                hal_emb_sensors = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim)
-            else:
-                raise NotImplementedError
-
-            hal_emb_sensors.forward(input_ph, dropout_ph)    # for lstm has variable scope
 
         with tf.variable_scope("modality_segment"):
             segment_emb_dim = 32
@@ -103,17 +93,6 @@ def main():
                 if v.op.name.startswith("modality_segment"):
                     var_list[v.op.name.replace("modality_segment/","")] = v
             restore_saver_segment = tf.train.Saver(var_list)
-
-        with tf.variable_scope("hallucination_segment"):
-            # load backbone model
-            if cfg.network == "convtsn":
-                hal_emb_segment = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=segment_emb_dim)
-            elif cfg.network == "convrtsn":
-                hal_emb_segment = networks.ConvRTSN(n_seg=cfg.num_seg, emb_dim=segment_emb_dim)
-            else:
-                raise NotImplementedError
-
-            hal_emb_segment.forward(input_ph, dropout_ph)    # for lstm has variable scope
 
         ############################# Forward Pass #############################
 
@@ -285,14 +264,6 @@ def main():
                         ##################### Data loading ########################
                         start_time = time.time()
                         eve, eve_sensors, eve_segment, lab, batch_sess = sess.run(next_train)
-                        # for memory concern, 1000 events are used in maximum
-                        if eve.shape[0] > 1000:
-                            idx = np.random.permutation(eve.shape[0])[:1000]
-                            eve = eve[idx]
-                            eve_sensors = eve_sensors[idx]
-                            eve_segment = eve_segment[idx]
-                            lab = lab[idx]
-                            batch_sess = batch_sess[idx]
                         load_time = time.time() - start_time
     
                         ##################### Triplet selection #####################

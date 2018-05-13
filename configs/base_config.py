@@ -48,7 +48,7 @@ class BaseConfig(object):
         # for parsing tfrecords
         args.feat_dict = {'resnet': 98304, 'sensors':8}
         args.context_dict = {'label': 'int', 'length': 'int'}
-        args.feat_dim = {'resnet': (8,8,1536), 'sensors':(8,)}
+        args.feat_dim = {'resnet': (8,8,1536), 'sensors':(8,), 'segment':(357,)}
 
         if args.all_session == 'all':
             args.all_session = load_session_list(os.path.join(args.DATA_ROOT, 'all_session.txt'))

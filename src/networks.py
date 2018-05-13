@@ -336,6 +336,40 @@ class OutputLayer(object):
             self.b = tf.get_variable(name="b", shape=[self.n_output],
                                 initializer=tf.zeros_initializer(),
                                 trainable=True)
+            self.W_o = tf.get_variable(name="W_o", shape=[self.n_output, self.n_output],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b_o = tf.get_variable(name="b_o", shape=[self.n_output],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
+
+    def forward(self, x, keep_prob):
+        """
+        x -- feature batch, [batch_size, n_input]
+        """
+
+        hidden = tf.nn.xw_plus_b(x, self.W, self.b)
+        hidden_drop = tf.nn.dropout(tf.nn.relu(hidden), keep_prob)
+        self.logits = tf.nn.xw_plus_b(hidden_drop, self.W_o, self.b_o)
+
+class CUBLayer(object):
+    def name(self):
+        return "CUBLayer"
+
+    def __init__(self, n_input, n_output):
+
+        self.n_input = n_input
+        self.n_output = n_output
+
+        with tf.variable_scope("CUBLayer"):
+            self.W = tf.get_variable(name="W", shape=[self.n_input, self.n_output],
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                regularizer=tf.contrib.layers.l2_regularizer(1.),
+                                trainable=True)
+            self.b = tf.get_variable(name="b", shape=[self.n_output],
+                                initializer=tf.zeros_initializer(),
+                                trainable=True)
 
     def forward(self, x, keep_prob):
         """
@@ -344,7 +378,6 @@ class OutputLayer(object):
 
         x_drop = tf.nn.dropout(x, keep_prob)
         self.logits = tf.nn.xw_plus_b(x_drop, self.W, self.b)
-
 
 # Recurrent TSN
 class RTSN(object):
@@ -816,8 +849,9 @@ def dcca_loss(X1, X2, K=0, rcov1=1e-4, rcov2=1e-4):
     Tested in ../preprocess/script.py, works similarly as cca in sklearn
     """
 
-    N, d1 = X1.get_shape().as_list()
-    N, d2 = X2.get_shape().as_list()
+    N = tf.cast(tf.shape(X1)[0], dtype=tf.float32)
+    d1 = X1.get_shape().as_list()[1]
+    d2 = X2.get_shape().as_list()[1]
     if K == 0:
         K = min(d1, d2)
 
@@ -841,7 +875,8 @@ def dcca_loss(X1, X2, K=0, rcov1=1e-4, rcov2=1e-4):
 
     K11 = tf.matmul(tf.matmul(V1, tf.diag(tf.pow(D1, -0.5))), tf.transpose(V1))
     K22 = tf.matmul(tf.matmul(V2, tf.diag(tf.pow(D2, -0.5))), tf.transpose(V2))
-    T = tf.matmul(tf.matmul(K11, S12), K22)
+    T = tf.reshape(tf.matmul(tf.matmul(K11, S12), K22), [d1,d2])    # use reshape to prevent error: SVD gradient has not been implemented for input with unknown inner matrix shape
+#    print ("T shape: ", T.get_shape().as_list())
     D, U, V = tf.svd(T)
     
     corr = tf.reduce_sum(D[:K])

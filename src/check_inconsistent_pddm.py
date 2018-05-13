@@ -38,7 +38,7 @@ def main():
         if cfg.network == "tsn":
             model_emb = networks.TSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
         elif cfg.network == "rtsn":
-            model_emb = networks.RTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
+            model_emb = networks.RTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim, n_input=cfg.n_input)
         elif cfg.network == "convtsn":
             model_emb = networks.ConvTSN(n_seg=cfg.num_seg, emb_dim=cfg.emb_dim)
         elif cfg.network == "convrtsn":
@@ -50,9 +50,9 @@ def main():
         model_ver = networks.PDDM(n_input=cfg.emb_dim)
 
         # get the embedding
-        if cfg.feat == "sensors":
+        if cfg.feat == "sensors" or cfg.feat == "segment":
             input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None])
-        elif cfg.feat == "resnet" or cfg.feat == "segment":
+        elif cfg.feat == "resnet" or cfg.feat == "segment_down":
             input_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, None, None, None])
         dropout_ph = tf.placeholder(tf.float32, shape=[])
         model_emb.forward(input_ph, dropout_ph)

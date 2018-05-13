@@ -1,0 +1,49 @@
+
+1. Data organization
+
+    DATA_ROOT should be the folder storing "2017_02_27_ITS1/, ..., and EAF/"
+    -- DATA_ROOT/
+        -- features/    # storing all features
+            -- 201704141420.npy
+            -- 201704141420_sensors.npy
+            -- 201704141420_seg_sp.npy
+            -- ...
+        -- labels/      # storing all labels
+            -- 201704141420_goal.npy
+            -- 201704141420_stimuli.npy
+            -- ...
+        -- results/     # storing all results
+
+    ** TODO: Modify default ROOT and DATA_ROOT (line 20) in ./configs/base_config.py
+
+2. Preprocessing
+    
+    ** TODO: Install slim:
+    **          create a folder that you want to store slim, for example, $HOME/workspace/
+    **          cd $HOME/workspace/
+    **          git clone https://github.com/tensorflow/models/
+    **          cd models/research/slim
+    **          mkdir pretrain
+    **          cd pretrain
+    **          download and untar: http://download.tensorflow.org/models/inception_resnet_v2_2016_08_30.tar.gz
+
+    **       Modify the file 3rd-parties/driving_event_detection/cfg.py:
+    **          modify "root" to DATA_ROOT
+    **          modify "slim_dir" to the folder of slim
+    **
+    **       Extract Resnet features:
+    **          cd 3rd-parties/driving_event_detection/
+    **          python run_model.py --preprocess --gpu 1 --model both --layer Goal
+    **
+    **       Unzip data.zip
+    **       Copy train_session.txt, test_session.txt, val_session.txt to DATA_ROOT
+    **       Copy features/*sensors_normalized.npy to DATA_ROOT/features/
+    **       Copy features/*seg_sp.npy to DATA_ROOT/features
+    **       Copy labels/ to DATA_ROOT/
+    **       Copy results/ to DATA_ROOT/
+
+3. Test
+
+    ** TODO: Run debug codes:
+    **          cd scripts/
+    **          ./debug.sh

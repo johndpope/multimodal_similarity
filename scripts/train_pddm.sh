@@ -4,25 +4,25 @@ cd ../src
 
 gpu=1
 
-loss="triplet"
-
 num_threads=2
 sess_per_batch=3
 emb_dim=32
-n_h=150
-n_w=240
+n_h=18
+n_w=32
 n_C=8
-n_input=2
-feat="segment"
-network="convrtsn"
+n_input=8
+feat="sensors"
+#feat="segment"
+#n_input=357
+network="rtsn"
 num_seg=3
 batch_size=512
 num_negative=3
 metric="squaredeuclidean"
 
-label_num=93
-max_epochs=750
-static_epochs=500
+label_num=45
+max_epochs=1500
+static_epochs=1200
 lr=1e-2
 keep_prob=1.0
 lambda_l2=0.
@@ -35,7 +35,7 @@ negative_epochs=0
 
 #pretrained_model="/mnt/work/honda_100h/results/lr_1e-3_20180326-015741/lr_1e-3.ckpt-27872"
 
-name=PDDM_${feat}_${label_num}
+name=PDDM_${feat}_labelnum${label_num}
 
 #python base_model.py --name $name --pretrained_model $pretrained_model \
 python pddm_model.py --name $name \

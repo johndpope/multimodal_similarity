@@ -6,16 +6,53 @@ cd ../src
 ##############################################################################
 
 
-feat="resnet"
+#feat="resnet"
 #feat="sensors"
-network="convrtsn"
-#network="rtsn"
-num_seg=3
-emb_dim=128
-#emb_dim=32
-variable_name="modality_core/"
+#feat="segment_down"
+feat="segment"
 
+num_seg=3
+variable_name="modality_core/"
+#label_type="goal"
+label_type="stimuli"
 gpu=1
+
+
+if [ $feat == "resnet" ]
+then
+    network="convrtsn"
+    emb_dim=128
+    n_h=8
+    n_w=8
+    n_C=20
+    n_input=1536
+elif [ $feat == "sensors" ]
+then
+    network="rtsn"
+    emb_dim=32
+    n_input=8
+    # void input
+    n_h=8
+    n_w=8
+    n_C=20
+elif [ $feat == "segment_down" ]
+then
+    network="convrtsn"
+    emb_dim=128
+    n_h=18
+    n_w=32
+    n_C=8
+    n_input=17
+elif [ $feat == "segment" ]
+then
+    network="rtsn"
+    emb_dim=32
+    n_input=357
+    # void input
+    n_h=18
+    n_w=32
+    n_C=8
+fi
 
 #model_path='/mnt/work/honda_100h/results/base_model_sensors_20180426-103049/base_model_sensors.ckpt-31000'    # sensors base model
 #model_path='/mnt/work/honda_100h/results/base_model_sensors_alpha1_20180426-162327/base_model_sensors_alpha1.ckpt-31000'    # sensors, alpha=1
@@ -31,12 +68,23 @@ gpu=1
 #model_path='/mnt/work/honda_100h/results/base_model_labelnum21_20180429-114340/base_model_labelnum21.ckpt-5250'    # label_num=21
 #model_path='/mnt/work/honda_100h/results/base_model_labelnum3_20180429-114358/base_model_labelnum3.ckpt-750'    # label_num=3
 #model_path='/mnt/work/honda_100h/results/base_model_labelnum3_20180427-231939/base_model_labelnum3.ckpt-750'    # label_num3 without dropout
-model_path='/mnt/work/honda_100h/results/base_model_labelnum63_20180427-121127/base_model_labelnum63.ckpt-15758'    #label_num=63 without dropout
+#model_path='/mnt/work/honda_100h/results/base_model_labelnum63_20180427-121127/base_model_labelnum63.ckpt-15758'    #label_num=63 without dropout
+
+#model_path='/mnt/work/honda_100h/results/base_model_labelnum9_epoch3000_20180504-225153/base_model_labelnum9_epoch3000.ckpt-8997'
+#model_path='/mnt/work/honda_100h/results/base_model_labelnum9_epoch6000_20180503-221959/base_model_labelnum9_epoch6000.ckpt-13220'
+#model_path='/mnt/work/honda_100h/results/base_model_labelnum9_epoch1500_20180504-162340/base_model_labelnum9_epoch1500.ckpt-4500'
+#model_path='/mnt/work/honda_100h/results/multitask_crosspred_labelnum9_20180504-161711/multitask_crosspred_labelnum9.ckpt-46500'
+
+model_path='/mnt/work/honda_100h/results/PDDM_segment_93_20180505-225524/PDDM_segment_93.ckpt-46500'    # PDDM segmentation
+#model_path='/mnt/work/honda_100h/results/base_model_segment_labelnum93_20180508-012639/base_model_segment_labelnum93.ckpt-46494'    # segment_down base_model
+#model_path='/mnt/work/honda_100h/results/base_model_segment_labelnum93_dropout0.5_20180508-102020/base_model_segment_labelnum93_dropout0.5.ckpt-46526'    # dropout0.5
 
 #python evaluate_hallucination.py --model_path $model_path --feat $feat \
 python evaluate_model.py --model_path $model_path --feat $feat \
                    --network $network --num_seg $num_seg \
-                   --gpu $gpu --emb_dim $emb_dim #--variable_name $variable_name
+                   --label_type $label_type \
+                   --n_h $n_h --n_w $n_w --n_C $n_C --n_input $n_input \
+                   --gpu $gpu --emb_dim $emb_dim --no_transfer #--variable_name $variable_name
 
 ##############################################################################
 

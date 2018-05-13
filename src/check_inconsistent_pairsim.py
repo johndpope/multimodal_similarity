@@ -38,10 +38,10 @@ def main():
 
         with tf.variable_scope("modality_sensors"):
             sensors_emb_dim = 32
-            model_emb_sensors = networks.RTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim)
+            model_emb_sensors = networks.RTSN(n_seg=cfg.num_seg, emb_dim=sensors_emb_dim, n_input=cfg.n_input)
             model_pairsim_sensors = networks.PairSim(n_input=sensors_emb_dim)
 
-            input_sensors_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, 8])
+            input_sensors_ph = tf.placeholder(tf.float32, shape=[None, cfg.num_seg, cfg.n_input])
             dropout_ph = tf.placeholder(tf.float32, shape=[])
             model_emb_sensors.forward(input_sensors_ph, dropout_ph)
 
