@@ -100,7 +100,12 @@ def main():
     print ("mAP = {:.4f}".format(mAP))
     print ("mAP_macro = {:.4f}".format(mAP_macro))
     print ("mPrec@0.5 = {:.4f}".format(mPrec))
-    print ("Recall@1 = {:.4f}, Recall@10 = {:.4f}, Recall@100 = {:.4f}".format(recall[0], recall[1], recall[2]))
+    print ("Recall@1 = {:.4f}".format(recall[0]))
+    print ("Recall@2 = {:.4f}".format(recall[1]))
+    print ("Recall@4 = {:.4f}".format(recall[2]))
+    print ("Recall@8 = {:.4f}".format(recall[3]))
+    print ("Recall@16 = {:.4f}".format(recall[4]))
+    print ("Recall@32 = {:.4f}".format(recall[5]))
 
     if cfg.label_type == 'goal':
         num2labels = honda_num2labels

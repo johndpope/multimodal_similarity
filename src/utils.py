@@ -24,7 +24,20 @@ def optimize(loss, global_step, optimizer, learning_rate, update_gradient_vars, 
 
     grads = opt.compute_gradients(loss, update_gradient_vars)
 
-    apply_gradient_op = opt.apply_gradients(grads, global_step=global_step)
+    grads_mul = []
+    for grad, var in grads:
+        # for honda experiments
+        if var.op.name.startswith("modality_sensors") or var.op.name.startswith("modality_segment"):
+            if grad is not None:
+                grad *= 0.1
+
+        # for CUB experiments
+        if var.op.name.startswith("InceptionV2"):
+            if grad is not None:
+                grad *= 0.1
+        grads_mul.append((grad, var))
+
+    apply_gradient_op = opt.apply_gradients(grads_mul, global_step=global_step)
 
 #    # add histograms for trainable variables
 #    if log_histograms:
@@ -480,7 +493,7 @@ def select_triplets_facenet(lab, all_dist, triplet_per_batch, alpha=0.2, num_neg
     if len(triplet_input_idx) > 0:
         return triplet_input_idx, np.mean(all_neg_count)
     else:
-        return None, None
+        return [], 0.
 
 def metric_loss(name):
     if name == 'triplet':

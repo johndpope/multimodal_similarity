@@ -275,7 +275,7 @@ def main():
 
                         select_time2 = time.time()-start_time_select-select_time1
 
-                        if triplet_input_idx is None:
+                        if (triplet_input_idx) == 0:
                             continue
                         triplet_input = eve[triplet_input_idx]
 

@@ -299,7 +299,7 @@ def main():
                             all_diff = utils.all_diffs(eve_embedding, eve_embedding)
                             triplet_input_idx, active_count = utils.select_triplets_facenet(lab_labeled,utils.cdist(all_diff,metric=cfg.metric),cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
 
-                            if triplet_input_idx is not None:
+                            if len(triplet_input_idx) == 0:
                                 triplet_input = eve_labeled[triplet_input_idx]
 
                         else:

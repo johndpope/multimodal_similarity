@@ -308,7 +308,7 @@ def main():
                         # sample triplets within sampled sessions
                         all_diff = utils.all_diffs(eve_embedding, eve_embedding)
                         triplet_input_idx, active_count = utils.select_triplets_facenet(lab,utils.cdist(all_diff,metric=cfg.metric),cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
-                        if triplet_input_idx is None:
+                        if len(triplet_input_idx) == 0:
                             continue
                         
                         triplet_input = eve[triplet_input_idx]

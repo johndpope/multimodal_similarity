@@ -33,6 +33,9 @@ class TrainConfig(BaseConfig):
         self.parser.add_argument('--no_joint', dest='no_joint', action="store_true",
                 help='Whether to use joint optimization')
         self.parser.set_defaults(no_soft=False)
+        self.parser.add_argument('--weighted', dest='weighted', action="store_true",
+                help='Whether to use weighted triplet loss')
+        self.parser.set_defaults(reverse=True)
 
         self.parser.add_argument('--label_num', type=int, default=93,
                        help='number of sessions with labels used for training')

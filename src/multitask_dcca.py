@@ -289,7 +289,7 @@ def main():
                             all_diff = utils.all_diffs(eve_embedding, eve_embedding)
                             triplet_input_idx, active_count = utils.select_triplets_facenet(lab_labeled,utils.cdist(all_diff,metric=cfg.metric),cfg.triplet_per_batch,cfg.alpha,num_negative=cfg.num_negative)
 
-                            if triplet_input_idx is not None:
+                            if len(triplet_input_idx):
                                 triplet_input = eve_labeled[triplet_input_idx]
 
                         else:
@@ -300,7 +300,7 @@ def main():
                         perm_idx = perm_idx[:min(3*(len(perm_idx)//3), 3*cfg.triplet_per_batch)]
                         mul_input = eve[perm_idx]
 
-                        if len(eve_labeled) and triplet_input_idx is not None:
+                        if len(eve_labeled) and len(triplet_input_idx):
                             triplet_input = np.concatenate((triplet_input, mul_input), axis=0)
                         else:
                             triplet_input = mul_input
@@ -357,7 +357,7 @@ def main():
                                                                  input_sensors_ph: val_feats2,
                                                                  input_segment_ph: val_feats3,
                                                                  dropout_ph: 1.0})
-                mAP, mPrec = utils.evaluate_simple(val_embeddings, val_labels)
+                mAP, mPrec,_ = utils.evaluate_simple(val_embeddings, val_labels)
 
                 summary = tf.Summary(value=[tf.Summary.Value(tag="Valiation mAP", simple_value=mAP),
                                             tf.Summary.Value(tag="Validation mPrec@0.5", simple_value=mPrec),

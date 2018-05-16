@@ -6,16 +6,16 @@ cd ../src
 ##############################################################################
 
 
-#feat="resnet"
+feat="resnet"
 #feat="sensors"
 #feat="segment_down"
-feat="segment"
+#feat="segment"
 
 num_seg=3
 variable_name="modality_core/"
-#label_type="goal"
-label_type="stimuli"
-gpu=1
+label_type="goal"
+#label_type="stimuli"
+gpu=0
 
 
 if [ $feat == "resnet" ]
@@ -54,6 +54,28 @@ then
     n_C=8
 fi
 
+#model_path='/mnt/work/honda_100h/final_results/base200_labelnum9_20180513-012341/base200_labelnum9.ckpt-6002'
+#model_path='/mnt/work/honda_100h/final_results/base400_labelnum9_20180513-223526/base400_labelnum9.ckpt-5999'
+#model_path='/mnt/work/honda_100h/results/multimodal_lambdamul0.1_labelnum9_20180514-230424/multimodal_lambdamul0.1_labelnum9.ckpt-5999'
+#model_path='/mnt/work/honda_100h/results/multimodal_full_lambdamul0.1_labelnum9_0.3_20180515-015310/multimodal_full_lambdamul0.1_labelnum9_0.3.ckpt-4876'
+model_path='/mnt/work/honda_100h/results/multimodal_full_lambdamul0.1_labelnum9_20180515-004621/multimodal_full_lambdamul0.1_labelnum9.ckpt-5478'
+
+#python evaluate_hallucination.py --model_path $model_path --feat $feat \
+python evaluate_model.py --model_path $model_path --feat $feat \
+                   --network $network --num_seg $num_seg \
+                   --label_type $label_type \
+                   --n_h $n_h --n_w $n_w --n_C $n_C --n_input $n_input \
+                   --gpu $gpu --emb_dim $emb_dim  --variable_name $variable_name #--no_transfer
+
+##############################################################################
+
+# feat="sensor_sae"
+# preprocess_func="mean"
+# 
+# python evaluate.py --feat $feat --preprocess_func $preprocess_func
+
+############ old models ###########################
+
 #model_path='/mnt/work/honda_100h/results/base_model_sensors_20180426-103049/base_model_sensors.ckpt-31000'    # sensors base model
 #model_path='/mnt/work/honda_100h/results/base_model_sensors_alpha1_20180426-162327/base_model_sensors_alpha1.ckpt-31000'    # sensors, alpha=1
 #model_path='/mnt/work/honda_100h/results/base_model_convtsn_20180426-103237/base_model_convtsn.ckpt-23250'    # base_model convtsn
@@ -75,25 +97,11 @@ fi
 #model_path='/mnt/work/honda_100h/results/base_model_labelnum9_epoch1500_20180504-162340/base_model_labelnum9_epoch1500.ckpt-4500'
 #model_path='/mnt/work/honda_100h/results/multitask_crosspred_labelnum9_20180504-161711/multitask_crosspred_labelnum9.ckpt-46500'
 
-model_path='/mnt/work/honda_100h/results/PDDM_segment_93_20180505-225524/PDDM_segment_93.ckpt-46500'    # PDDM segmentation
+#model_path='/mnt/work/honda_100h/results/PDDM_segment_93_20180505-225524/PDDM_segment_93.ckpt-46500'    # PDDM segmentation
 #model_path='/mnt/work/honda_100h/results/base_model_segment_labelnum93_20180508-012639/base_model_segment_labelnum93.ckpt-46494'    # segment_down base_model
 #model_path='/mnt/work/honda_100h/results/base_model_segment_labelnum93_dropout0.5_20180508-102020/base_model_segment_labelnum93_dropout0.5.ckpt-46526'    # dropout0.5
 
-#python evaluate_hallucination.py --model_path $model_path --feat $feat \
-python evaluate_model.py --model_path $model_path --feat $feat \
-                   --network $network --num_seg $num_seg \
-                   --label_type $label_type \
-                   --n_h $n_h --n_w $n_w --n_C $n_C --n_input $n_input \
-                   --gpu $gpu --emb_dim $emb_dim --no_transfer #--variable_name $variable_name
-
-##############################################################################
-
-# feat="sensor_sae"
-# preprocess_func="mean"
-# 
-# python evaluate.py --feat $feat --preprocess_func $preprocess_func
-
-############ old models ###########################
+############ older models ###########################
 
 #model_path='/mnt/work/honda_100h/results/base_model_20180328-230914/base_model.ckpt-35231'     # tsn 256
 #model_path='/mnt/work/honda_100h/results/base_model_128_20180329-231615/base_model_128.ckpt-35200'    # tsn 128

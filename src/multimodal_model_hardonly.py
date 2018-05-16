@@ -11,7 +11,6 @@ from tensorflow.contrib.tensorboard.plugins import projector
 import numpy as np
 import itertools
 import random
-import pickle
 import pdb
 from six import iteritems
 import glob
@@ -69,7 +68,7 @@ def select_triplets_mul_hard(triplet_input_idx, lab, sim_prob, triplet_per_batch
 
     return triplet_input_idx, triplet_count, mul_count
 
-def select_triplets_mul(triplet_input_idx, lab, sim_prob, dist_dict, triplet_per_batch, triplet_per_event=2, threshold_up=0.65, threshold_down=0.35):
+def select_triplets_mul(triplet_input_idx, lab, sim_prob, triplet_per_batch, triplet_per_event=2, threshold_up=0.65, threshold_down=0.35):
 
     idx_dict = {}
     for i, l in enumerate(lab):
@@ -89,7 +88,6 @@ def select_triplets_mul(triplet_input_idx, lab, sim_prob, dist_dict, triplet_per
     adjacency = np.equal(lab, lab.T)
 
     struct_selected = []
-    margins = []
     for i in np.random.permutation(lab.shape[0]):
         if lab[i] > 0:    # for foreground event
             
@@ -99,16 +97,12 @@ def select_triplets_mul(triplet_input_idx, lab, sim_prob, dist_dict, triplet_per
 
             if len(hard_pos) == 0:
                 all_pos = np.where(adjacency[i])[0]
-                if len(all_pos) == 1:
-                    continue
                 sim = sim_prob[i, all_pos]
-                hard_pos = np.array([all_pos[np.nanargmin(sim)]], dtype='int32')
+                hard_pos = np.array([all_pos[np.argmax(sim)]], dtype='int32')
             if len(hard_neg) == 0:
                 all_neg = np.where(adjacency[i]==False)[0]
-                if len(all_neg) == 1:
-                    continue
                 sim = sim_prob[i, all_neg]
-                hard_neg = np.array([all_neg[np.nanargmax(sim)]], dtype='int32')
+                hard_neg = np.array([all_neg[np.argmin(sim)]], dtype='int32')
 
             hard_comb = [(hp, hn) for hn in hard_neg for hp in hard_pos]
             random.shuffle(hard_comb)
@@ -119,27 +113,136 @@ def select_triplets_mul(triplet_input_idx, lab, sim_prob, dist_dict, triplet_per
                     triplet_selected.append(triplet)
 
                     ################## structure mining ####################
-                    far_neg = np.where(np.logical_and(np.squeeze(lab) == lab[hn], sim_prob[i]<threshold_down))[0]
-                    if len(far_neg):
-                        fn = np.random.choice(far_neg)
-                        triplet = (i, hn, fn)
-                        if not triplet in struct_selected:
-                            struct_selected.append(triplet)
-                            margins.append(dist_dict[lab[fn,0]][-1])
 
                         
-        if len(struct_selected)+len(triplet_selected)-triplet_count >= triplet_per_batch:
+        if len(triplet_selected)-triplet_count >= triplet_per_batch:
             break
 
-#    triplet_selected = triplet_selected[:(triplet_count + triplet_per_batch)]
-    hard_count = len(triplet_selected) - triplet_count
-    struct_selected = struct_selected[:(triplet_per_batch-hard_count)]
-    struct_count = len(struct_selected)
-    margins = margins[:struct_count]
+    triplet_selected = triplet_selected[:(triplet_count + triplet_per_batch)]
+    mul_count = len(triplet_selected) - triplet_count
 
-    triplet_input_idx = [idx for triplet in triplet_selected+struct_selected for idx in triplet]
+    triplet_input_idx = [idx for triplet in triplet_selected for idx in triplet]
 
-    return triplet_input_idx, margins, triplet_count, hard_count, struct_count
+    return triplet_input_idx, triplet_count, mul_count
+
+
+
+def nopos_triplets_multimodal(sim_prob, max_num=1000):
+    """
+    randomly select triplets, not only use high-confidence pairs
+    still enforce at least one positive and one negative in a row
+    no constraints on positive rows
+    """
+    perm = np.random.permutation(sim_prob.shape[0])
+    sim_prob = sim_prob[perm]
+
+    mul_idx = []
+    count = 0
+    for i in range(sim_prob.shape[0]):
+        pos_idx = np.where(sim_prob[i]>0.5)[0]
+        neg_idx = np.where(sim_prob[i]<0.5)[0]
+        
+        np.random.shuffle(neg_idx)
+        if len(pos_idx):
+            neg_idx = neg_idx[:len(pos_idx)]
+            idx = np.hstack((pos_idx, neg_idx))
+        else:
+            idx = neg_idx[:8]
+        np.random.shuffle(idx)
+
+        perm = itertools.permutations(idx, 2)
+        for j in range(int(np.ceil(max_num/sim_prob.shape[0]))):
+            try:
+                pair = perm.__next__()
+                mul_idx.extend([i, pair[0], pair[1]])
+                count += 1
+
+                if count == max_num:
+                    return mul_idx, count
+            except:
+                break
+
+    return mul_idx, count
+
+def random_triplets_multimodal(sim_prob, max_num=1000):
+    """
+    randomly select triplets, not only use high-confidence pairs
+    still enforce at least one positive and one negative in a row
+    """
+    perm = np.random.permutation(sim_prob.shape[0])
+    sim_prob = sim_prob[perm]
+
+    pos_rows = np.where(np.sum((sim_prob>0.5), axis=1) > 1)[0]
+
+    mul_idx = []
+    count = 0
+    for i in pos_rows:
+        pos_idx = np.where(sim_prob[i]>0.5)[0]
+        neg_idx = np.where(sim_prob[i]<0.5)[0]
+        
+        np.random.shuffle(neg_idx)
+        neg_idx = neg_idx[:len(pos_idx)]
+        idx = np.hstack((pos_idx, neg_idx))
+        np.random.shuffle(idx)
+
+        perm = itertools.permutations(idx, 2)
+        for j in range(int(np.ceil(max_num/len(pos_rows)))):
+            try:
+                pair = perm.__next__()
+                mul_idx.extend([i, pair[0], pair[1]])
+                count += 1
+
+                if count == max_num:
+                    return mul_idx, count
+            except:
+                break
+
+    return mul_idx, count
+
+
+def select_triplets_multimodal(sim_prob, threshold=0.8, max_num=1000):
+    """
+    sim_prob -- similarity probabilities from multimodal data, [N, N], 1 indicates similar and 0 indicates dissimilar
+    max_num -- maximum number of triplets
+    """
+    perm = np.random.permutation(sim_prob.shape[0])
+    sim_prob = sim_prob[perm]
+
+    mul_idx = []
+    count = 0
+    for i in range(sim_prob.shape[0]):
+        # get high-confidence pairs
+        pos_idx = np.where(sim_prob[i]>threshold)[0]
+        neg_idx = np.where(sim_prob[i]<(1-threshold))[0]
+        if len(pos_idx) and len(neg_idx):
+            neg_idx = np.argsort(sim_prob[i])[:len(pos_idx)]    # get same number of negatives as positives
+            high_confidence = np.hstack((pos_idx, neg_idx))
+            np.random.shuffle(high_confidence)    # important to get (A,-,+) triplet
+
+            # get all combinations
+            for pair in itertools.combinations(high_confidence, 2):
+                mul_idx.extend([i, pair[0], pair[1]])
+                count += 1
+
+                if count == max_num:
+                    return mul_idx, count
+
+    return mul_idx, count
+    
+
+def pos_neg_pairs(lab):
+    """
+    return all pos-neg pairs
+    """
+    pos_neg_idx = []
+    for i, l in enumerate(lab):
+        if l > 0:    # only foreground events as anchor
+            all_neg_idx = np.where(lab != l)[0]
+            for neg_idx in all_neg_idx:
+                pos_neg_idx.extend([i,neg_idx,neg_idx])    # add one more void element for consistent with triple loss
+    return pos_neg_idx
+
+
 
 def main():
 
@@ -228,8 +331,6 @@ def main():
 
         # get the number of multimodal triplets (x3)
         mul_num_ph = tf.placeholder(tf.int32, shape=[])
-        margins_ph = tf.placeholder(tf.float32, shape=[None])
-        struct_num = tf.shape(margins_ph)[0] * 3
 
         # variable for visualizing the embeddings
         emb_var = tf.Variable([0.0], name='embeddings')
@@ -242,8 +343,8 @@ def main():
 
         # split embedding into anchor, positive and negative and calculate triplet loss
         anchor, positive, negative = tf.unstack(tf.reshape(embedding[:(tf.shape(embedding)[0]-mul_num_ph)], [-1,3,cfg.emb_dim]), 3, 1)
-        anchor_hard, positive_hard, negative_hard = tf.unstack(tf.reshape(embedding[-mul_num_ph:-struct_num], [-1,3,cfg.emb_dim]), 3, 1)
-        anchor_struct, positive_struct, negative_struct = tf.unstack(tf.reshape(embedding[-struct_num:], [-1,3,cfg.emb_dim]), 3, 1)
+        anchor_mul, positive_mul, negative_mul = tf.unstack(tf.reshape(embedding[-mul_num_ph:], [-1,3,cfg.emb_dim]), 3, 1)
+
 
         # Sensors branch
         emb_sensors = model_emb_sensors.hidden
@@ -272,14 +373,9 @@ def main():
 
         # weighted triplet loss for multimodal inputs
 #        if cfg.weighted:
-#            metric_loss2, _ = networks.weighted_triplet_loss(anchor_hard, positive_hard, negative_hard, prob_AB, prob_AC, cfg.alpha)
+#            metric_loss2, _ = networks.weighted_triplet_loss(anchor_mul, positive_mul, negative_mul, prob_AB, prob_AC, cfg.alpha)
 #        else:
-
-        # triplet loss for hard examples from multimodal data
-        metric_loss2 = networks.triplet_loss(anchor_hard, positive_hard, negative_hard, cfg.alpha)
-
-        # margin-based triplet loss for structure mining from multimodal data
-        metric_loss3 = networks.triplet_loss(anchor_struct, positive_struct, negative_struct, margins_ph)
+        metric_loss2 = networks.triplet_loss(anchor_mul, positive_mul, negative_mul, cfg.alpha)
 
         # whether to apply joint optimization
         if cfg.no_joint:
@@ -292,8 +388,8 @@ def main():
         regularization_loss = tf.reduce_sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
         total_loss = tf.cond(tf.greater(mul_num_ph, 0),
                 lambda: tf.cond(tf.equal(mul_num_ph, tf.shape(embedding)[0]), 
-                    lambda: (metric_loss2+metric_loss3*0.3) * cfg.lambda_multimodal + regularization_loss * cfg.lambda_l2,
-                    lambda: metric_loss1 + (metric_loss2+metric_loss3*0.3) * cfg.lambda_multimodal + regularization_loss * cfg.lambda_l2),
+                    lambda: metric_loss2 * cfg.lambda_multimodal + regularization_loss * cfg.lambda_l2,
+                    lambda: metric_loss1 + metric_loss2 * cfg.lambda_multimodal + regularization_loss * cfg.lambda_l2),
                 lambda: metric_loss1 + regularization_loss * cfg.lambda_l2)
 
         tf.summary.scalar('learning_rate', lr_ph)
@@ -351,6 +447,14 @@ def main():
                 fout.write('{0}\t{1}\t{2}\t{3}\t{4}\n'.format(i, val_labels[i,0], val_sess[i],
                                     val_boundaries[i][0], val_boundaries[i][1]))
 
+        # compute pairwise embedding distance for each class on validation set
+        # FIXME: don't use np.max
+#        dist_dict = {}
+#        for i in range(1, np.max(val_labels)+1):
+#            temp_feat = val_feats[np.where(val_labels==i)[0]]
+#            dist_dict[i] = [np.mean(utils.cdist(utils.all_diffs(temp_feat, temp_feat),
+#                                metric=cfg.metric))]
+#        pdb.set_trace()
 
         #########################################################################
 
@@ -379,17 +483,6 @@ def main():
             restore_saver_segment.restore(sess, cfg.segment_path)
 
             ################## Training loop ##################
-
-            # Initialize pairwise embedding distance for each class on validation set
-            val_embeddings, _ = sess.run([embedding, set_emb],
-                                                feed_dict = {input_ph: val_feats,
-                                                             dropout_ph: 1.0})
-            dist_dict = {}
-            for i in range(np.max(val_labels)+1):
-                temp_emb = val_embeddings[np.where(val_labels==i)[0]]
-                dist_dict[i] = [np.mean(utils.cdist(utils.all_diffs(temp_emb, temp_emb),
-                                    metric=cfg.metric))]
-
             epoch = -1
             while epoch < cfg.max_epochs-1:
                 step = sess.run(global_step, feed_dict=None)
@@ -454,8 +547,7 @@ def main():
                             continue
 
                         triplet_count = len(triplet_input_idx) // 3
-                        hard_count = 0
-                        struct_count = 0
+                        multimodal_count = 0
                         if epoch >= cfg.multimodal_epochs:
                             # Get the similarity of all events
                             sim_prob = np.zeros((eve.shape[0], eve.shape[0]), dtype='float32')*np.nan
@@ -475,18 +567,18 @@ def main():
                                     sim_prob[comb[start+i][1], comb[start+i][0]] = sim[i]
 
                             # sample triplets from similarity prediction
-                            # maximum number not exceed the cfg.triplet_per_batch
+                            # maximum number not exceed the number of triplet_input from facenet selection
 
-                            triplet_input_idx, margins, triplet_count, hard_count, struct_count = select_triplets_mul(triplet_input_idx, lab, sim_prob, dist_dict, cfg.triplet_per_batch, 3, 0.8, 0.2)
+                            # hard samples mining
+                            triplet_input_idx, triplet_count, multimodal_count1 = select_triplets_mul_hard(triplet_input_idx, lab, sim_prob, cfg.triplet_per_batch, 3, 0.8, 0.2)
+
+                            sensors_input = eve_sensors[triplet_input_idx[-(3*multimodal_count1):]]
+                            segment_input = eve_segment[triplet_input_idx[-(3*multimodal_count1):]]
 
                             # add up all multimodal triplets
-                            multimodal_count = hard_count + struct_count
-
-                            sensors_input = eve_sensors[triplet_input_idx[-(3*multimodal_count):]]
-                            segment_input = eve_segment[triplet_input_idx[-(3*multimodal_count):]]
-
+                            multimodal_count = multimodal_count1
                         
-                        print (triplet_count, hard_count, struct_count)
+                        print (triplet_count, multimodal_count)
                         triplet_input = eve[triplet_input_idx]
 
                         select_time = time.time() - start_time
@@ -507,15 +599,13 @@ def main():
                                                  mul_num_ph: 0,
                                                  lr_ph: learning_rate})
                             metric_err2 = 0
-                            metric_err3 = 0
                         else:
-                            err, metric_err1, metric_err2, metric_err3, _, step, summ, s_AB, s_AC = sess.run(
-                                    [total_loss, metric_loss1, metric_loss2, metric_loss3, train_op, global_step, summary_op, summ_prob_AB, summ_prob_AC],
+                            err, metric_err1, metric_err2, _, step, summ, s_AB, s_AC = sess.run(
+                                    [total_loss, metric_loss1, metric_loss2, train_op, global_step, summary_op, summ_prob_AB, summ_prob_AC],
                                     feed_dict = {input_ph: triplet_input,
                                                  input_sensors_ph: sensors_input,
                                                  input_segment_ph: segment_input,
                                                  mul_num_ph: multimodal_count*3,
-                                                 margins_ph: margins,
                                                  dropout_ph: cfg.keep_prob,
                                                  lr_ph: learning_rate})
                             summary_writer.add_summary(s_AB, step)
@@ -528,10 +618,8 @@ def main():
                         summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=err),
                                     tf.Summary.Value(tag="active_count", simple_value=active_count),
                                     tf.Summary.Value(tag="triplet_count", simple_value=triplet_count),
-                                    tf.Summary.Value(tag="hard_count", simple_value=hard_count),
-                                    tf.Summary.Value(tag="struct_count", simple_value=struct_count),
+                                    tf.Summary.Value(tag="multimodal_count", simple_value=multimodal_count),
                                     tf.Summary.Value(tag="metric_loss1", simple_value=metric_err1),
-                                    tf.Summary.Value(tag="metric_loss3", simple_value=metric_err3),
                                     tf.Summary.Value(tag="metric_loss2", simple_value=metric_err2)])
     
                         summary_writer.add_summary(summary, step)
@@ -561,17 +649,6 @@ def main():
                 visual_embedding.tensor_name = emb_var.name
                 visual_embedding.metadata_path = os.path.join(result_dir, 'metadata_val.tsv')
                 projector.visualize_embeddings(summary_writer, config)
-
-
-                # update dist_dict
-                if (epoch+1) == 50 or (epoch+1) % 200 == 0:
-                    for i in dist_dict.keys():
-                        temp_emb = val_embeddings[np.where(val_labels==i)[0]]
-                        dist_dict[i].append(np.mean(utils.cdist(utils.all_diffs(temp_emb, temp_emb),
-                                        metric=cfg.metric)))
-
-                    pickle.dump(dist_dict, open(os.path.join(result_dir, 'dist_dict.pkl'), 'wb'))
-
 
                 # save model
                 saver.save(sess, os.path.join(result_dir, cfg.name+'.ckpt'), global_step=step)

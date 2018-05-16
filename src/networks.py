@@ -760,6 +760,37 @@ def weighted_triplet_loss(anchor, positive, negative, prob_pos, prob_neg, alpha=
 
     return tf.reduce_mean(weighted_loss, 0), tf.stack([w1,w2,w3,w4], axis=1)
 
+def weighted_triplet_loss(anchor, positive, negative, prob_pos, prob_neg, alpha=0.2):
+    """
+    prob_pos -- tf.float32, [N,] similarity confidence of anchor-positive pairs
+    prob_neg -- tf.float32, [N,] similarity confidence of anchor-negative pairs
+
+    4-class problem:
+        § p1(1-p2)L(A,B,C)
+        § (1-p1)p2L(A,C,B)
+        § p1p2[L(A,B,A)+L(A,C,A)]/2
+        § (1-p1)(1-p2)[L(A,A,B)+L(A,A,C)]/2
+    """
+
+    def _triplet_loss(anc, pos, neg, alpha):
+        pos_dist = tf.reduce_sum(tf.square(tf.subtract(anc, pos)), 1)
+        neg_dist = tf.reduce_sum(tf.square(tf.subtract(anc, neg)), 1)
+        basic_loss = tf.add(tf.subtract(pos_dist, neg_dist), alpha)
+        # FIXME: use softplus?
+        return tf.maximum(basic_loss, 0.0)
+
+    w1 = tf.multiply(prob_pos, (1-prob_neg))
+    w2 = tf.multiply((1-prob_pos), prob_neg)
+    w3 = tf.multiply(prob_pos, prob_neg)
+    w4 = tf.multiply((1-prob_pos), (1-prob_neg))
+
+    weighted_loss = tf.multiply(w1, _triplet_loss(anchor, positive, negative, alpha)) + \
+                    tf.multiply(w2, _triplet_loss(anchor, negative, positive, alpha)) + \
+                    tf.multiply(w3, 0.5*(_triplet_loss(anchor, positive, anchor, -alpha*2)+_triplet_loss(anchor, negative, anchor, -alpha*2))) + \
+                    tf.multiply(w4, 0.5*(_triplet_loss(anchor, anchor, positive, alpha*2)+_triplet_loss(anchor, anchor, negative, alpha*2)))
+
+    return tf.reduce_mean(weighted_loss, 0), tf.stack([w1,w2,w3,w4], axis=1)
+
 # Weighted Batch-hard loss
 # reference: In Defense of the Triplet Loss for Person Re-Identification
 # (https://github.com/VisualComputingInstitute/triplet-reid/blob/master/loss.py)
@@ -882,3 +913,35 @@ def dcca_loss(X1, X2, K=0, rcov1=1e-4, rcov2=1e-4):
     corr = tf.reduce_sum(D[:K])
     return -corr    # maximize correlation is to minimze the negative of it
 
+def Inception_V2(input_batch):
+    """
+    Reference:
+        1. Vasili's codes
+        2. https://github.com/tensorflow/models/issues/429#issuecomment-277885861
+    """
+
+    slim_dir = "/home/xyang/workspace/models/research/slim"
+    checkpoints_dir = slim_dir + "/pretrain"
+    checkpoints_file = checkpoints_dir + '/inception_v2.ckpt'
+
+    import sys
+    sys.path.append(slim_dir)
+    from nets import inception
+    slim = tf.contrib.slim
+    image_size = inception.inception_v2.default_image_size
+
+    cropped_images = tf.random_crop(
+           tf.image.convert_image_dtype(input_batch, dtype=tf.float32),
+           [tf.shape(input_batch)[0], image_size, image_size, 3])
+
+    preprocessed_images = tf.multiply(tf.subtract(cropped_images, 0.5), 2.0)
+        
+    # Create the model, use the default arg scope to configure
+    # the batch norm parameters.
+    with slim.arg_scope(inception.inception_v2_arg_scope()):
+        logits, endpoints = inception.inception_v2(preprocessed_images,
+                                                        num_classes=1001,
+                                                        is_training=True)
+        pool5 = endpoints['AvgPool_1a']
+
+    return tf.reshape(pool5, (-1,1024))
